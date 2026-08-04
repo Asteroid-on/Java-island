@@ -35,3 +35,12 @@ MediaInfoHelper.exe
 src/main/resources/native/MediaInfoDaemon/bin/
 src/main/resources/native/MediaInfoDaemon/obj/
 src/main/resources/native/MediaInfoDaemon/publish/
+
+### Maven ###
+target/
+
+### Large binaries ###
+ncm-server.exe
+
+### IDE user-specific ###
+.idea/workspace.xml
