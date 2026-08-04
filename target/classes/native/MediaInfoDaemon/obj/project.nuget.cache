@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "dgSpecHash": "WdV348TPcek=",
+  "success": true,
+  "projectFilePath": "D:\\Java-island\\Java-island\\src\\main\\resources\\native\\MediaInfoDaemon\\MediaInfoDaemon.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Lenovo\\.nuget\\packages\\microsoft.net.illink.tasks\\8.0.29\\microsoft.net.illink.tasks.8.0.29.nupkg.sha512",
+    "C:\\Users\\Lenovo\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\8.0.29\\microsoft.netcore.app.runtime.win-x64.8.0.29.nupkg.sha512",
+    "C:\\Users\\Lenovo\\.nuget\\packages\\microsoft.windowsdesktop.app.runtime.win-x64\\8.0.29\\microsoft.windowsdesktop.app.runtime.win-x64.8.0.29.nupkg.sha512",
+    "C:\\Users\\Lenovo\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\8.0.29\\microsoft.aspnetcore.app.runtime.win-x64.8.0.29.nupkg.sha512",
+    "C:\\Users\\Lenovo\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.22000.56\\microsoft.windows.sdk.net.ref.10.0.22000.56.nupkg.sha512"
+  ],
+  "logs": []
+}

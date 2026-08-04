@@ -1,0 +1,2 @@
+D:\Java-island\Java-island\src\main\resources\native\MediaInfoDaemon\publish\MediaInfoDaemon.pdb
+D:\Java-island\Java-island\src\main\resources\native\MediaInfoDaemon\publish\MediaInfoDaemon.exe
