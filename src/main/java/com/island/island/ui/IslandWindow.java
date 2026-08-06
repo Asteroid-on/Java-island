@@ -94,11 +94,11 @@ public class IslandWindow extends JWindow implements Serializable {
     private static final int COVER_SIZE = 48;
     private static final int COVER_SSAA = 3;
     private static final int COVER_HIRES = COVER_SIZE * COVER_SSAA;
-    private static final double COVER_ROTATION_DEG_PER_FRAME = 1.5;
+    private static final double COVER_ROTATION_DEG_PER_FRAME = 0.5;
     private static final int COVER_ROTATION_FRAME_MS = 30;
     private static final Font MUSIC_TITLE_FONT = new Font("Microsoft YaHei", Font.PLAIN, 11);
     private static final Font MUSIC_ARTIST_FONT = new Font("Microsoft YaHei", Font.PLAIN, 10);
-    private static final Font MUSIC_LYRICS_FONT = new Font("Microsoft YaHei", Font.BOLD, 12);
+    private static final Font MUSIC_LYRICS_FONT = new Font("Microsoft YaHei", Font.BOLD, 14);
     private static final int LYRIC_SCROLL_MS = 200;
 
     private transient Image bluetoothIcon;
@@ -122,10 +122,11 @@ public class IslandWindow extends JWindow implements Serializable {
     private int currentLyricIndex = -1;
     private volatile boolean fetchingLyrics = false;
     private String lastFetchedTrackId = "";
-    // 主路径：直接使用 daemon 报告的 positionTicks / 10000
-    // 兜底：daemon 报告 0 时用 fallback 字段自行推进
-    private long fallbackBaseMs = 0;
-    private long fallbackStartMs = 0;
+    // 仅使用 daemon 汇报的 positionTicks 作为歌词进度
+    // fallback 字段已废弃，wall-clock 自推进机制已移除
+    @Deprecated private long fallbackBaseMs = 0;
+    @Deprecated private long fallbackStartMs = 0;
+    private long lastDaemonEndTimeMs = 0;
 
     private JPanel animPanel;
     private JPanel weatherPanel;
@@ -1132,14 +1133,7 @@ public class IslandWindow extends JWindow implements Serializable {
         System.out.println("[IslandWindow] updateMusicInfo: wasPlaying=" + wasPlaying
                 + " isPlaying=" + isPlaying + " expandedVisible=" + isExpandedIslandVisible());
 
-        // 兜底基准：daemon 位置有效时更新
-        if (info.hasSession()) {
-            long daemonPos = info.getPositionTicks() / 10_000;
-            if (daemonPos > 0 || fallbackStartMs == 0) {
-                fallbackStartMs = System.currentTimeMillis();
-                fallbackBaseMs = daemonPos;
-            }
-        }
+        // 歌词进度完全依赖 daemon 汇报的 positionTicks
 
         String trackId = info.getTitle() + "|" + info.getArtist();
         if (info.hasSession() && !trackId.equals(lastFetchedTrackId) && !info.getTitle().isEmpty()) {
@@ -1147,7 +1141,7 @@ public class IslandWindow extends JWindow implements Serializable {
             lyricsService.clear();
             lrcLines = Collections.emptyList();
             currentLyricIndex = -1;
-            fallbackStartMs = 0;
+            lastDaemonEndTimeMs = 0;
             fetchingLyrics = false;
             if (musicLyricsLabel != null) { musicLyricsLabel.setText(" "); musicLyricsLabel.repaint(); }
             fetchLyricsAsync(info.getTitle(), info.getArtist());
@@ -1243,23 +1237,15 @@ public class IslandWindow extends JWindow implements Serializable {
     private void updateProgressDisplay(MusicInfo info) {
         if (musicLyricsLabel == null || info == null || lrcLines.isEmpty()) return;
         long daemonPos = info.getPositionTicks() / 10_000;
-        long pos;
-        if (daemonPos > 0) {
-            // 主路径：直接使用 daemon 位置
-            pos = daemonPos;
-            fallbackStartMs = System.currentTimeMillis();
-            fallbackBaseMs = daemonPos;
-        } else if (fallbackStartMs > 0) {
-            // 兜底：daemon 位置无效，自行推进
-            pos = fallbackBaseMs + Math.max(0, System.currentTimeMillis() - fallbackStartMs);
-        } else {
-            return;
-        }
+        long pos = Math.max(daemonPos, 0) + 900;  // 提前0.9秒显示歌词
         long end = info.getEndTimeTicks() / 10_000;
+        if (end <= 0 && lastDaemonEndTimeMs > 0) {
+            end = lastDaemonEndTimeMs;
+        }
         if (end > 0 && pos > end) pos = end;
         int idx = lyricsService.findLineIndex(lrcLines, pos);
-        System.out.printf("[LyricProgress] daemon=%dms pos=%dms idx=%d/%d '%s'%n",
-                daemonPos, pos, idx, lrcLines.size(),
+        System.out.printf("[LyricProgress] position=%dms idx=%d/%d '%s'%n",
+                pos, idx, lrcLines.size(),
                 idx >= 0 && idx < lrcLines.size() ? lrcLines.get(idx).content : "N/A");
         if (idx != currentLyricIndex) {
             currentLyricIndex = idx;
@@ -1270,10 +1256,10 @@ public class IslandWindow extends JWindow implements Serializable {
     private void startLyricScrollTimer() {
         if (lyricScrollTimer != null && lyricScrollTimer.isRunning()) return;
         if (lyricScrollTimer != null) { lyricScrollTimer.stop(); lyricScrollTimer = null; }
-        // 若 poll 尚未初始化基准，从 currentMusicInfo 补救
-        if (fallbackStartMs == 0 && currentMusicInfo != null && currentMusicInfo.hasSession()) {
-            fallbackStartMs = System.currentTimeMillis();
-            fallbackBaseMs = currentMusicInfo.getPositionTicks() / 10_000;
+        // 暂停状态不启动定时器
+        if (currentMusicInfo == null || !currentMusicInfo.isStrictlyPlaying()) return;
+        if (currentMusicInfo.getEndTimeTicks() > 0) {
+            lastDaemonEndTimeMs = currentMusicInfo.getEndTimeTicks() / 10_000;
         }
         System.out.println("[LyricProgress] start timer interval=" + LYRIC_SCROLL_MS + "ms");
         lyricScrollTimer = new javax.swing.Timer(LYRIC_SCROLL_MS, e -> {

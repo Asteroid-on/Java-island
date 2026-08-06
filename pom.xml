@@ -10,8 +10,8 @@
     <packaging>jar</packaging>
 
     <properties>
-        <maven.compiler.source>11</maven.compiler.source>
-        <maven.compiler.target>11</maven.compiler.target>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
@@ -36,6 +36,12 @@
             <artifactId>opencc4j</artifactId>
             <version>1.8.1</version>
         </dependency>
+        <!-- JMTC: Java Media Transport Controls — 直接桥接 Windows SMTC -->
+        <dependency>
+            <groupId>io.github.selemba1000</groupId>
+            <artifactId>JavaMediaTransportControls</artifactId>
+            <version>0.0.3</version>
+        </dependency>
     </dependencies>
 
     <build>
@@ -43,10 +49,10 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.11.0</version>
+                <version>3.14.0</version>
                 <configuration>
-                    <source>11</source>
-                    <target>11</target>
+                    <source>25</source>
+                    <target>25</target>
                 </configuration>
             </plugin>
             
