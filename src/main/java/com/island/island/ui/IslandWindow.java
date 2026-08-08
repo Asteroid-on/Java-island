@@ -121,7 +121,9 @@ public class IslandWindow extends JWindow implements Serializable {
     private javax.swing.Timer lyricScrollTimer;
     private int currentLyricIndex = -1;
     private volatile boolean fetchingLyrics = false;
+    private volatile boolean fetchingCover = false;
     private String lastFetchedTrackId = "";
+    private String lastFetchedCoverTrackId = "";
     // 仅使用 daemon 汇报的 positionTicks 作为歌词进度
     // fallback 字段已废弃，wall-clock 自推进机制已移除
     @Deprecated private long fallbackBaseMs = 0;
@@ -1143,6 +1145,8 @@ public class IslandWindow extends JWindow implements Serializable {
             currentLyricIndex = -1;
             lastDaemonEndTimeMs = 0;
             fetchingLyrics = false;
+            fetchingCover = false;
+            musicCoverImage = null;
             if (musicLyricsLabel != null) { musicLyricsLabel.setText(" "); musicLyricsLabel.repaint(); }
             fetchLyricsAsync(info.getTitle(), info.getArtist());
             fetchCoverAsync(info.getTitle(), info.getArtist());
@@ -1230,7 +1234,15 @@ public class IslandWindow extends JWindow implements Serializable {
                 mt.addImage(raw, 0); mt.waitForID(0, 1000);
                 if (raw.getWidth(null) > 0) musicCoverImage = createCircularCover(raw, COVER_HIRES);
             } catch (Exception ex) { musicCoverImage = null; }
-        } else { fetchCoverAsync(fullTitle, fullArtist); musicCoverImage = null; }
+        } else {
+            // 避免每轮询重复发起请求或清空已显示的封面
+            String currentTrackId = fullTitle + "|" + fullArtist;
+            boolean alreadyFetching = fetchingCover && currentTrackId.equals(lastFetchedCoverTrackId);
+            if (!alreadyFetching && musicCoverImage == null) {
+                fetchCoverAsync(fullTitle, fullArtist);
+            }
+            // 仅在曲目切换时才清空旧封面（由 updateMusicInfo 切歌流程处理）
+        }
         if (musicCoverLabel != null) musicCoverLabel.repaint();
     }
 
@@ -1306,18 +1318,43 @@ public class IslandWindow extends JWindow implements Serializable {
 
     private void fetchCoverAsync(String title, String artist) {
         if (title.isEmpty() || artist.isEmpty()) return;
+        if (fetchingCover) {
+            System.out.println("[IslandWindow] 封面获取已在进行中，跳过重复请求");
+            return;
+        }
+        fetchingCover = true;
+        final String trackId = title + "|" + artist;
+        lastFetchedCoverTrackId = trackId;
         System.out.println("[IslandWindow] 开始异步获取封面: " + title + " - " + artist);
         new Thread(() -> {
-            String url = lyricsService.fetchCoverUrl(title, artist);
-            if (!url.isEmpty()) {
-                System.out.println("[IslandWindow] 封面URL: " + url);
-                Image cover = downloadImageFromUrl(url);
-                if (cover != null) SwingUtilities.invokeLater(() -> {
-                    musicCoverImage = createCircularCover(cover, COVER_HIRES);
-                    if (musicCoverLabel != null) musicCoverLabel.repaint();
-                });
-            } else {
-                System.out.println("[IslandWindow] 封面获取失败（iTunes无结果）");
+            try {
+                String url = lyricsService.fetchCoverUrl(title, artist);
+                if (!url.isEmpty()) {
+                    System.out.println("[IslandWindow] 封面URL: " + url);
+                    Image cover = downloadImageFromUrl(url);
+                    if (cover != null) SwingUtilities.invokeLater(() -> {
+                        // stale-track 校验：封面只属于发起请求时的曲目
+                        String currentTrackId = currentMusicInfo.getTitle() + "|" + currentMusicInfo.getArtist();
+                        if (!trackId.equals(currentTrackId)) {
+                            System.out.println("[IslandWindow] 封面已过期（曲目已切换），丢弃");
+                            return;
+                        }
+                        // SMTC 已提供权威封面时，跳过 iTunes 结果，避免两个合法封面源交替闪烁
+                        if (!currentMusicInfo.getThumbnailBase64().isEmpty()) {
+                            System.out.println("[IslandWindow] SMTC封面已就绪，跳过iTunes封面");
+                            return;
+                        }
+                        musicCoverImage = createCircularCover(cover, COVER_HIRES);
+                        if (musicCoverLabel != null) musicCoverLabel.repaint();
+                    });
+                } else {
+                    System.out.println("[IslandWindow] 封面获取失败（iTunes无结果）");
+                }
+            } finally {
+                // 仅当此请求仍为"当前活跃请求"时才释放锁，防止旧曲目线程误清标志
+                if (trackId.equals(lastFetchedCoverTrackId)) {
+                    fetchingCover = false;
+                }
             }
         }, "CoverFetcher").start();
     }
