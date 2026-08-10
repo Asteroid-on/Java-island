@@ -11,12 +11,17 @@ class Program
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
 
     static readonly string PosFile = Path.Combine(Path.GetTempPath(), "media_info.json");
-    static readonly string[] Players = ["cloudmusic"];
+    static readonly string[] Players = ["cloudmusic", "QQMusic"];
 
     // SMTC SourceAppUserModelId 白名单（只检测白名单中的播放器，忽略浏览器等）
     static readonly string[] SrcWhitelist = [
         "cloudmusic",       // 网易云音乐
         "netease",          // 网易云 (UWP)
+        "qqmusic",          // QQ音乐 (小写)
+        "QQMusic",          // QQ音乐 (驼峰)
+        "qqmusic.exe",      // QQ音乐 (含.exe后缀)
+        "QQMusic.exe",      // QQ音乐 (驼峰+.exe)
+        "tencent",          // 腾讯系 (兜底)
     ];
 
     static string _last = "";
@@ -118,7 +123,14 @@ class Program
         if (x == null) return false;
         try {
             string src = x.SourceAppUserModelId ?? "";
-            return SrcWhitelist.Any(w => src.ToLowerInvariant().Contains(w));
+            if (string.IsNullOrEmpty(src)) return false;
+            bool matched = SrcWhitelist.Any(w => src.ToLowerInvariant().Contains(w));
+            if (!matched) {
+                // 诊断：输出未命中白名单的 SourceAppUserModelId 及其 hex 编码
+                var hex = string.Join(" ", src.Select(c => ((int)c).ToString("X2")));
+                Console.Error.WriteLine($"[Daemon] ⚠ 白名单未命中: \"{src}\" (hex: {hex})");
+            }
+            return matched;
         } catch { return false; }
     }
 
@@ -140,6 +152,11 @@ class Program
             }
             if (cur != null) {
                 Console.Error.WriteLine($"[Daemon] GetCurrentSession 被白名单拦截: {cur.SourceAppUserModelId}");
+                // 兜底：若音乐播放器进程正在运行，认为此会话可信
+                if (ScanProc()) {
+                    Console.Error.WriteLine($"[Daemon] 兜底(GetCurrentSession)：音乐进程在运行，使用此会话: {cur.SourceAppUserModelId}");
+                    return cur;
+                }
             }
 
             // 2. 枚举所有会话，取第一个白名单匹配
@@ -153,9 +170,14 @@ class Program
                 }
             }
 
-            // 3. 无白名单匹配 → 返回 null（不再取第一个！）
+            // 3. 白名单全不匹配 → 兜底：检测到音乐进程在运行 → 使用第一个会话
             if (sessions.Count > 0) {
                 Console.Error.WriteLine($"[Daemon] 所有 {sessions.Count} 个会话均不在白名单 (首: {sessions[0].SourceAppUserModelId})");
+                // 兜底：若音乐播放器进程正在运行，认为此会话可信（允许非标准 AppUserModelId 的播放器）
+                if (ScanProc()) {
+                    Console.Error.WriteLine($"[Daemon] 兜底：音乐进程在运行，使用首个会话: {sessions[0].SourceAppUserModelId}");
+                    return sessions[0];
+                }
             }
             return null;
         }
@@ -254,8 +276,10 @@ class Program
                 _lastSrcAppId = src;
                 _lastTrackId = trackId;
 
-                // ★ 暂停感知插值：累积实际播放时长，暂停期间冻结
-                if (rawPTicks == 0)
+                // ★ 暂停感知插值：仅对网易云音乐生效（QQ音乐 SMTC 可靠报告位置）
+                string srcLower = (src ?? "").ToLowerInvariant();
+                bool isNetease = srcLower.Contains("cloudmusic") || srcLower.Contains("netease");
+                if (rawPTicks == 0 && isNetease)
                 {
                     long nowSw = System.Diagnostics.Stopwatch.GetTimestamp();
 

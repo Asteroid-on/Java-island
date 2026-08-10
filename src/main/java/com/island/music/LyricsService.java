@@ -38,7 +38,8 @@ public final class LyricsService {
 
     public LyricsService() {
         this.dispatcher = new LyricsDispatcher()
-                .register(new NeteaseLyricsProvider());
+                .register(new NeteaseLyricsProvider())
+                .register(new QQLyricsProvider());
     }
 
     // ═══════════════════════════════════════════
@@ -266,7 +267,7 @@ public final class LyricsService {
         return -1;
     }
 
-    private static String unescape(String s) {
+    static String unescape(String s) {
         if (s.indexOf('\\') < 0) return s;
         StringBuilder sb = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {
