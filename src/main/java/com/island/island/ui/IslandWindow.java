@@ -124,6 +124,7 @@ public class IslandWindow extends JWindow implements Serializable {
     private volatile boolean fetchingCover = false;
     private String lastFetchedTrackId = "";
     private String lastFetchedCoverTrackId = "";
+    private String lastCoverBase64 = "";
     // 仅使用 daemon 汇报的 positionTicks 作为歌词进度
     // fallback 字段已废弃，wall-clock 自推进机制已移除
     @Deprecated private long fallbackBaseMs = 0;
@@ -1147,6 +1148,7 @@ public class IslandWindow extends JWindow implements Serializable {
             fetchingLyrics = false;
             fetchingCover = false;
             musicCoverImage = null;
+            lastCoverBase64 = "";
             if (musicLyricsLabel != null) { musicLyricsLabel.setText(" "); musicLyricsLabel.repaint(); }
             fetchLyricsAsync(info.getTitle(), info.getArtist());
             fetchCoverAsync(info.getTitle(), info.getArtist());
@@ -1224,16 +1226,21 @@ public class IslandWindow extends JWindow implements Serializable {
         if (!lrcLines.isEmpty()) { updateProgressDisplay(currentMusicInfo); }
         else { if (musicLyricsLabel != null) musicLyricsLabel.setText(" "); fetchLyricsAsync(fullTitle, fullArtist); }
 
-        // 封面：SMTC Base64 优先
+        // 封面：SMTC Base64 优先，未变化时跳过重复解码
         String b64 = currentMusicInfo.getThumbnailBase64();
         if (!b64.isEmpty()) {
-            try {
-                byte[] data = Base64.getDecoder().decode(b64);
-                Image raw = Toolkit.getDefaultToolkit().createImage(data);
-                MediaTracker mt = new MediaTracker(new JLabel());
-                mt.addImage(raw, 0); mt.waitForID(0, 1000);
-                if (raw.getWidth(null) > 0) musicCoverImage = createCircularCover(raw, COVER_HIRES);
-            } catch (Exception ex) { musicCoverImage = null; }
+            if (!b64.equals(lastCoverBase64)) {
+                try {
+                    byte[] data = Base64.getDecoder().decode(b64);
+                    Image raw = Toolkit.getDefaultToolkit().createImage(data);
+                    MediaTracker mt = new MediaTracker(new JLabel());
+                    mt.addImage(raw, 0); mt.waitForID(0, 1000);
+                    if (raw.getWidth(null) > 0) {
+                        musicCoverImage = createCircularCover(raw, COVER_HIRES);
+                        lastCoverBase64 = b64;
+                    }
+                } catch (Exception ex) { musicCoverImage = null; }
+            }
         } else {
             // 避免每轮询重复发起请求或清空已显示的封面
             String currentTrackId = fullTitle + "|" + fullArtist;
@@ -1325,10 +1332,12 @@ public class IslandWindow extends JWindow implements Serializable {
         fetchingCover = true;
         final String trackId = title + "|" + artist;
         lastFetchedCoverTrackId = trackId;
-        System.out.println("[IslandWindow] 开始异步获取封面: " + title + " - " + artist);
+        final String srcAppId = currentMusicInfo.getSourceAppId();
+        System.out.println("[IslandWindow] 开始异步获取封面: " + title + " - " + artist
+                + " src=" + srcAppId);
         new Thread(() -> {
             try {
-                String url = lyricsService.fetchCoverUrl(title, artist);
+                String url = lyricsService.fetchCoverUrl(title, artist, srcAppId);
                 if (!url.isEmpty()) {
                     System.out.println("[IslandWindow] 封面URL: " + url);
                     Image cover = downloadImageFromUrl(url);
@@ -1348,7 +1357,7 @@ public class IslandWindow extends JWindow implements Serializable {
                         if (musicCoverLabel != null) musicCoverLabel.repaint();
                     });
                 } else {
-                    System.out.println("[IslandWindow] 封面获取失败（iTunes无结果）");
+                    System.out.println("[IslandWindow] 封面获取失败（无结果）");
                 }
             } finally {
                 // 仅当此请求仍为"当前活跃请求"时才释放锁，防止旧曲目线程误清标志

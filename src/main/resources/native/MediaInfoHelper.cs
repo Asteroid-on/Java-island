@@ -28,7 +28,6 @@ class MediaInfoHelper
 {
     private static readonly string[] MusicPlayers = {
         "cloudmusic.exe",  // 网易云音乐
-        "qqmusic.exe",     // QQ音乐
         "kugou.exe",       // 酷狗音乐
         "kwmusic.exe",     // 酷我音乐
         "spotify.exe",     // Spotify

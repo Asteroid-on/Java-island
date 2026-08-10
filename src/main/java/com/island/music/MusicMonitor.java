@@ -30,16 +30,14 @@ public final class MusicMonitor extends AbstractPollingMonitor {
     protected void poll() {
         MusicInfo current = WindowsMediaManager.queryMediaInfo();
 
-        // 活跃会话（Playing 或 Paused）→ 始终触发。
-        // 每次触发都会通过 updateMusicInfo 重置 lastMusicSnapshotTicks/Time，
-        // 这样 seek 后 daemon 推送的新位置会自然覆盖旧基准，歌词立即跳转。
-        if (current.hasSession() && current.isPlaying()) {
+        // 严格播放中 → 始终触发，以实时追踪播放位置
+        if (current.hasSession() && current.isStrictlyPlaying()) {
             lastMusicInfo = current;
             fireUpdate(current);
             return;
         }
 
-        // 无活跃会话 → 仅在状态变化时触发（去重优化）
+        // 暂停或无会话 → 仅在状态变化时触发（去重优化）
         if (current.hasSession() == lastMusicInfo.hasSession()
                 && current.isSameSong(lastMusicInfo)) {
             return;

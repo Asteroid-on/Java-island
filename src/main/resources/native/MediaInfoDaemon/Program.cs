@@ -11,7 +11,14 @@ class Program
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
 
     static readonly string PosFile = Path.Combine(Path.GetTempPath(), "media_info.json");
-    static readonly string[] Players = ["cloudmusic","qqmusic","kugou","kwmusic","spotify","foobar2000","music.ui","wmplayer"];
+    static readonly string[] Players = ["cloudmusic"];
+
+    // SMTC SourceAppUserModelId 白名单（只检测白名单中的播放器，忽略浏览器等）
+    static readonly string[] SrcWhitelist = [
+        "cloudmusic",       // 网易云音乐
+        "netease",          // 网易云 (UWP)
+    ];
+
     static string _last = "";
     static GlobalSystemMediaTransportControlsSession? _s;
     static volatile bool _hasProc;
@@ -90,46 +97,67 @@ class Program
 
     static bool ScanProc() { foreach (var n in Players) try { if (Process.GetProcessesByName(n).Length > 0) return true; } catch { } return false; }
 
-    /// <summary>检查 SMTC sourceAppId 对应的进程是否确实在运行。</summary>
-    static bool IsSourceAppRunning(string src) {
+    /// <summary>检查 sourceAppId 是否在白名单中 + 对应进程是否确实在运行。</summary>
+    static bool IsSourceWhitelistedAndRunning(string src) {
         if (string.IsNullOrEmpty(src)) return false;
         var srcLower = src.ToLowerInvariant();
+        // 1. 白名单检查
+        if (!SrcWhitelist.Any(w => srcLower.Contains(w))) return false;
+        // 2. 进程运行检查（白名单匹配但不在 Players 进程名中 → 仍视为有效，如 UWP）
         foreach (var n in Players) {
             if (srcLower.Contains(n.ToLowerInvariant())) {
                 try { return Process.GetProcessesByName(n).Length > 0; }
                 catch { return false; }
             }
         }
-        return false;  // 未知来源，视为未运行
+        return true;
     }
 
+    /// <summary>检查 SMTC 会话是否属于白名单播放器。</summary>
+    static bool IsWhitelistedSession(GlobalSystemMediaTransportControlsSession? x) {
+        if (x == null) return false;
+        try {
+            string src = x.SourceAppUserModelId ?? "";
+            return SrcWhitelist.Any(w => src.ToLowerInvariant().Contains(w));
+        } catch { return false; }
+    }
+
+    /// <summary>
+    /// 获取当前活跃的白名单 SMTC 会话。
+    /// 只返回 sourceAppId 在白名单中的会话，忽略浏览器等非音乐播放器。
+    /// </summary>
     static async Task<GlobalSystemMediaTransportControlsSession?> GetS()
     {
         try
         {
             var m = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            var s = m.GetCurrentSession();
-            // 优先已知播放器：遍历所有会话，找到第一个已知来源
-            if (s == null)
-            {
-                var sessions = new List<GlobalSystemMediaTransportControlsSession>();
-                foreach (var x in m.GetSessions()) sessions.Add(x);
-                // 先尝试匹配已知播放器
-                foreach (var x in sessions)
-                {
-                    try
-                    {
-                        string src = x.SourceAppUserModelId ?? "";
-                        foreach (var p in Players)
-                            if (src.ToLowerInvariant().Contains(p))
-                                return x;
-                    }
-                    catch { }
-                }
-                // 都没有匹配 → 取第一个
-                if (sessions.Count > 0) s = sessions[0];
+
+            // 1. GetCurrentSession：必须过白名单
+            var cur = m.GetCurrentSession();
+            if (IsWhitelistedSession(cur)) {
+                Console.Error.WriteLine($"[Daemon] GetCurrentSession → {cur!.SourceAppUserModelId}");
+                return cur;
             }
-            return s;
+            if (cur != null) {
+                Console.Error.WriteLine($"[Daemon] GetCurrentSession 被白名单拦截: {cur.SourceAppUserModelId}");
+            }
+
+            // 2. 枚举所有会话，取第一个白名单匹配
+            var sessions = new List<GlobalSystemMediaTransportControlsSession>();
+            foreach (var x in m.GetSessions()) sessions.Add(x);
+
+            foreach (var x in sessions) {
+                if (IsWhitelistedSession(x)) {
+                    Console.Error.WriteLine($"[Daemon] 枚举命中白名单: {x.SourceAppUserModelId}");
+                    return x;
+                }
+            }
+
+            // 3. 无白名单匹配 → 返回 null（不再取第一个！）
+            if (sessions.Count > 0) {
+                Console.Error.WriteLine($"[Daemon] 所有 {sessions.Count} 个会话均不在白名单 (首: {sessions[0].SourceAppUserModelId})");
+            }
+            return null;
         }
         catch { return null; }
     }
@@ -333,8 +361,8 @@ class Program
             _zeroPositionCount = 0;
             _lastPositionSource = "NONE";
         }
-        // hasSession: SMTC 源应用的进程确实在运行 + 有歌名
-        bool hs = !string.IsNullOrEmpty(t) && IsSourceAppRunning(src);
+        // hasSession: 白名单 + 进程运行 + 有歌名
+        bool hs = !string.IsNullOrEmpty(t) && IsSourceWhitelistedAndRunning(src);
         bool minimized = _hasProc && Players.Any(n => { try { return Process.GetProcessesByName(n).Any(p => { try { var h = p.MainWindowHandle; return h == IntPtr.Zero || IsIconic(h) || !IsWindowVisible(h); } catch { return false; } }); } catch { return false; } });
         var sb = new StringBuilder();
         sb.Append("{");
