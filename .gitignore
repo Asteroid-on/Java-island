@@ -48,3 +48,9 @@ QQMusicapi/
 ### IDE user-specific ###
 .idea/workspace.xml
 .idea/vcs.xml
+
+### Logs ###
+*.log
+
+### Cache ###
+cache/

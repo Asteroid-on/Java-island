@@ -5,10 +5,13 @@ import com.island.island.model.IslandState;
 import com.island.island.service.DynamicIslandService;
 import com.island.island.service.impl.DynamicIslandServiceImpl;
 import com.island.island.ui.IslandWindow;
+import com.island.island.ui.SettingsDialog;
 import com.island.util.AnimationUtil;
+import com.island.util.SvgIcon;
 
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import javax.swing.*;
 
@@ -23,6 +26,9 @@ public class SystemTrayManager {
     private final DynamicIslandService service;
     private MouseInfoMonitor mouseMonitor; // 鼠标监听器
     private JDialog popupDialog;          // 菜单的 JDialog 容器
+
+    /** 菜单字体（黑体，13pt） */
+    private static final Font MENU_FONT = new Font("SimHei", Font.PLAIN, 13);
 
     public SystemTrayManager(IslandWindow islandWindow) {
         this.islandWindow = islandWindow;
@@ -72,7 +78,7 @@ public class SystemTrayManager {
     }
 
     private void showPopupMenu() {
-        hidePopup(); // 先关掉旧的
+        hidePopup();
         popupDialog = new JDialog();
         popupDialog.setUndecorated(true);
         popupDialog.setAlwaysOnTop(true);
@@ -80,72 +86,173 @@ public class SystemTrayManager {
         popupDialog.setFocusableWindowState(true);
         popupDialog.setType(Window.Type.POPUP);
 
-        // 手绘面板 — 暗色背景、居中文案、精准尺寸
-        final int MENU_W = 70;
-        final int MENU_H = 26;
+        final int MENU_W = 100;
+        final int ITEM_H = 32;
+        final int RADIUS = 10;
+        final int OUTER_PAD = 8; // 外圈透明边，模拟阴影
+        final Color BG_NORMAL = new Color(45, 45, 48);  // #2D2D30
+        final Color BG_HOVER  = new Color(61, 61, 64);  // hover 略亮
+        final Color FG_TEXT    = new Color(235, 235, 235); // 浅色文字
+        final Color BORDER_COLOR = new Color(62, 62, 67);
+
+        // 圆角容器面板，重写 paint 以裁剪子组件到圆角区域
         JPanel panel = new JPanel() {
-            @Override
-            protected void paintComponent(Graphics g) {
-                super.paintComponent(g);
+            @Override public void paint(Graphics g) {
                 Graphics2D g2d = (Graphics2D) g;
-                g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-
+                g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                 // 背景
-                g2d.setColor(new Color(50, 50, 50));
-                g2d.fillRect(0, 0, getWidth(), getHeight());
-
+                g2d.setColor(BG_NORMAL);
+                g2d.fillRoundRect(0, 0, getWidth(), getHeight(), RADIUS * 2, RADIUS * 2);
+                // 裁剪子组件到圆角区域
+                Shape oldClip = g2d.getClip();
+                Shape clip = new RoundRectangle2D.Double(0, 0, getWidth(), getHeight(), RADIUS * 2, RADIUS * 2);
+                g2d.setClip(clip);
+                super.paintChildren(g);
                 // 边框
-                g2d.setColor(new Color(70, 70, 70));
-                g2d.drawRect(0, 0, getWidth() - 1, getHeight() - 1);
-
-                // 居中文字
-                g2d.setColor(Color.WHITE);
-                g2d.setFont(new Font("Microsoft YaHei", Font.PLAIN, 12));
-                FontMetrics fm = g2d.getFontMetrics();
-                String text = "\u9000\u51FA";
-                int tw = fm.stringWidth(text);
-                int th = fm.getAscent();
-                g2d.drawString(text, (getWidth() - tw) / 2, (getHeight() + th) / 2 - 1);
+                g2d.setColor(BORDER_COLOR);
+                g2d.setStroke(new BasicStroke(1f));
+                g2d.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, RADIUS * 2, RADIUS * 2);
+                g2d.setClip(oldClip);
             }
         };
-        panel.setPreferredSize(new Dimension(MENU_W, MENU_H));
-        panel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        panel.addMouseListener(new MouseAdapter() {
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setOpaque(false);
+        panel.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2));
+
+        // ── "设置" 项 ──
+        Image settingsIcon = SvgIcon.load("/icons/设置_setting-two.svg", 40, FG_TEXT);
+        MenuItem settingsItem = new MenuItem("设  置", MENU_W, ITEM_H, BG_NORMAL, BG_HOVER, FG_TEXT, MENU_FONT, settingsIcon, 20);
+        settingsItem.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                hidePopup();
+                SwingUtilities.invokeLater(() -> {
+                    SettingsDialog dialog = new SettingsDialog(null,
+                            () -> islandWindow.getLyricsService().reinitCache());
+                    dialog.setVisible(true);
+                });
+            }
+        });
+        panel.add(settingsItem);
+
+        // ── 分隔线（自定义绘制，避免 JSeparator 忽略 setForeground） ──
+        JPanel sep2 = new JPanel() {
+            @Override protected void paintComponent(Graphics g) {
+                Graphics2D g2d = (Graphics2D) g;
+                g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2d.setColor(new Color(120, 120, 125));
+                int midY = getHeight() / 2;
+                g2d.drawLine(8, midY, getWidth() - 8, midY);
+            }
+        };
+        sep2.setPreferredSize(new Dimension(MENU_W, 8));
+        sep2.setOpaque(false);
+        panel.add(sep2);
+
+        // ── "退出" 项 ──
+        Image exitIcon = SvgIcon.load("/icons/退出_logout.svg", 40, FG_TEXT);
+        MenuItem exitItem = new MenuItem("退  出", MENU_W, ITEM_H, BG_NORMAL, BG_HOVER, FG_TEXT, MENU_FONT, exitIcon, 20);
+        exitItem.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
                 hidePopup();
                 dispose();
                 System.exit(0);
             }
-            @Override
-            public void mouseEntered(MouseEvent e) {
-                panel.setBackground(new Color(70, 70, 70));
-                panel.repaint();
-            }
-            @Override
-            public void mouseExited(MouseEvent e) {
-                panel.setBackground(new Color(50, 50, 50));
-                panel.repaint();
-            }
         });
+        panel.add(exitItem);
 
-        popupDialog.add(panel);
+        // ── 外层透明根面板：四周留出 OUTER_PAD 透明边，模拟阴影/发光 ──
+        JPanel rootPanel = new JPanel(new BorderLayout());
+        rootPanel.setOpaque(false);
+        rootPanel.setBorder(BorderFactory.createEmptyBorder(OUTER_PAD, OUTER_PAD, OUTER_PAD, OUTER_PAD));
+        rootPanel.add(panel, BorderLayout.CENTER);
+
+        popupDialog.add(rootPanel);
         popupDialog.pack();
 
-        // 鼠标位置定位
-        Point mousePoint = MouseInfo.getPointerInfo().getLocation();
-        popupDialog.setLocation(mousePoint.x - MENU_W, mousePoint.y - MENU_H - 5);
+        // 透明背景让窗口四周不可见，内层面板抗锯齿圆角渲染呈现在透明基底上
+        popupDialog.setBackground(new Color(0, 0, 0, 0));
 
-        // 失焦自动关闭
+        // 定位：鼠标右上方，边界检测防止溢出
+        Point mousePoint = MouseInfo.getPointerInfo().getLocation();
+        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+        int menuW = panel.getPreferredSize().width;
+        int menuH = panel.getPreferredSize().height;
+        int x = mousePoint.x + 5;
+        int y = mousePoint.y - menuH - 5;
+        if (x + menuW > screenSize.width)  x = mousePoint.x - menuW - 5;
+        if (y < 0) y = mousePoint.y + 5;
+        if (y + menuH > screenSize.height) y = screenSize.height - menuH;
+        popupDialog.setLocation(x, y);
+
         popupDialog.addWindowFocusListener(new WindowAdapter() {
-            public void windowLostFocus(WindowEvent e) {
-                hidePopup();
-            }
+            public void windowLostFocus(WindowEvent e) { hidePopup(); }
         });
 
         popupDialog.setVisible(true);
         popupDialog.toFront();
         popupDialog.requestFocus();
+    }
+
+    // ── 菜单项组件（自定义绘制，支持图标） ──
+    private static class MenuItem extends JPanel {
+        private final Color normalBg, hoverBg;
+        private final String text;
+        private final Font font;
+        private final Image icon;
+        private final int iconDisplaySize;
+        private boolean hover;
+
+        MenuItem(String text, int w, int h, Color normalBg, Color hoverBg, Color fg, Font font) {
+            this(text, w, h, normalBg, hoverBg, fg, font, null, 0);
+        }
+
+        MenuItem(String text, int w, int h, Color normalBg, Color hoverBg, Color fg, Font font, Image icon, int iconDisplaySize) {
+            this.text = text;
+            this.normalBg = normalBg;
+            this.hoverBg = hoverBg;
+            this.font = font;
+            this.icon = icon;
+            this.iconDisplaySize = iconDisplaySize;
+            setPreferredSize(new Dimension(w, h));
+            setOpaque(false);
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            setForeground(fg);
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseEntered(MouseEvent e) { hover = true; repaint(); }
+                @Override
+                public void mouseExited(MouseEvent e) { hover = false; repaint(); }
+            });
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2d = (Graphics2D) g;
+            g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            if (hover) {
+                g2d.setColor(hoverBg);
+                g2d.fillRoundRect(3, 2, getWidth() - 6, getHeight() - 4, 8, 8);
+            }
+            g2d.setColor(getForeground());
+            g2d.setFont(font);
+            FontMetrics fm = g2d.getFontMetrics();
+
+            if (icon != null && iconDisplaySize > 0) {
+                int isz = iconDisplaySize;
+                int iconY = (getHeight() - isz) / 2;
+                int tw = fm.stringWidth(text);
+                int totalW = isz + 6 + tw;
+                int startX = (getWidth() - totalW) / 2;
+                g2d.drawImage(icon, startX, iconY, isz, isz, null);
+                g2d.drawString(text, startX + isz + 6, (getHeight() + fm.getAscent()) / 2 - 1);
+            } else {
+                int tw = fm.stringWidth(text);
+                g2d.drawString(text, (getWidth() - tw) / 2, (getHeight() + fm.getAscent()) / 2 - 1);
+            }
+        }
     }
 
     private void hidePopup() {

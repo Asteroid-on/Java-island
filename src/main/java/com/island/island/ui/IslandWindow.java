@@ -183,6 +183,11 @@ public class IslandWindow extends JWindow implements Serializable {
         monitor.start();
     }
 
+    /** 供 SystemTrayManager 获取 LyricsService 引用。 */
+    public LyricsService getLyricsService() {
+        return lyricsService;
+    }
+
     public boolean isShowingNotification() {
         return showingNotification;
     }

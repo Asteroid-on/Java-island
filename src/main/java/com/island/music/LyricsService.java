@@ -1,5 +1,6 @@
 package com.island.music;
 
+import com.island.config.AppConstants;
 import com.island.music.model.LyricItem;
 
 import java.io.BufferedReader;
@@ -32,14 +33,19 @@ public final class LyricsService {
             "\\[(\\d{1,2}):(\\d{1,2})[.:](\\d{2,3})\\]");
 
     private final LyricsDispatcher dispatcher;
-    private String lastArtist = "", lastTitle = "";
-    private List<LyricItem> cachedLines = Collections.emptyList();
-    private String cachedCoverUrl = "";
+    private volatile LyricsCache cache = new LyricsCache();
 
     public LyricsService() {
         this.dispatcher = new LyricsDispatcher()
                 .register(new NeteaseLyricsProvider())
                 .register(new QQLyricsProvider());
+        AppConstants.setOnCacheDirChange(this::reinitCache);
+    }
+
+    /** 当缓存目录变更时重建 LyricsCache 实例。 */
+    public void reinitCache() {
+        cache = new LyricsCache();
+        System.out.println("[Lyrics] 缓存已切换至: " + AppConstants.getCacheDir());
     }
 
     // ═══════════════════════════════════════════
@@ -48,15 +54,18 @@ public final class LyricsService {
 
     public List<LyricItem> getLyrics(String title, String artist, String sourceAppId) {
         if (title == null || artist == null || title.isEmpty()) return Collections.emptyList();
-        if (title.equals(lastTitle) && artist.equals(lastArtist) && !cachedLines.isEmpty()) {
-            return cachedLines;
+
+        List<LyricItem> cached = cache.getLyrics(sourceAppId, title, artist);
+        if (cached != null) {
+            System.out.println("[Lyrics] 缓存命中 " + title + " - " + artist + " src=" + sourceAppId);
+            return cached;
         }
 
         System.out.println("[Lyrics] " + title + " - " + artist + " src=" + sourceAppId);
         List<LyricItem> lines = dispatcher.dispatchLyrics(title, artist, sourceAppId);
 
         if (!lines.isEmpty()) {
-            lastTitle = title; lastArtist = artist; cachedLines = lines;
+            cache.putLyrics(sourceAppId, title, artist, lines);
             System.out.println("[Lyrics] ✅ " + lines.size() + "行");
         } else {
             System.out.println("[Lyrics] ❌ 所有来源均失败");
@@ -70,12 +79,19 @@ public final class LyricsService {
 
     public String fetchCoverUrl(String title, String artist, String sourceAppId) {
         if (title == null || artist == null || title.isEmpty()) return "";
-        if (title.equals(lastTitle) && artist.equals(lastArtist) && !cachedCoverUrl.isEmpty())
-            return cachedCoverUrl;
+
+        String cached = cache.getCoverUrl(sourceAppId, title, artist);
+        if (cached != null) {
+            System.out.println("[Cover] 缓存命中 " + title + " - " + artist);
+            return cached;
+        }
 
         // 1. 平台封面 API
         String url = dispatcher.dispatchCoverUrl(title, artist, sourceAppId);
-        if (!url.isEmpty()) { cachedCoverUrl = url; return url; }
+        if (!url.isEmpty()) {
+            cache.putCoverUrl(sourceAppId, title, artist, url);
+            return url;
+        }
 
         // 2. iTunes 通用源
         try {
@@ -90,7 +106,7 @@ public final class LyricsService {
             String art = extractJsonField(resp.body(), "artworkUrl100");
             if (art.isEmpty()) return "";
             art = art.replace("100x100bb", "1200x1200bb");
-            cachedCoverUrl = art;
+            cache.putCoverUrl(sourceAppId, title, artist, art);
             return art;
         } catch (Exception e) { return ""; }
     }
@@ -116,7 +132,7 @@ public final class LyricsService {
         return target;
     }
 
-    public void clear() { lastTitle = ""; lastArtist = ""; cachedLines = Collections.emptyList(); }
+    public void clear() { cache.clear(); }
 
     // ═══════════════════════════════════════════
     //  LRC 解析（包内共享）
