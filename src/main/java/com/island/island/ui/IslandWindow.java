@@ -13,6 +13,7 @@ import com.island.tray.SystemTrayManager;
 import com.island.util.AnimationUtil;
 
 import com.island.wifi.WifiMonitor;
+import com.island.battery.BatteryMonitor;
 import com.island.weather.HybridWeatherService;
 import com.island.weather.WeatherIconMapper;
 import com.island.weather.WeatherInfo;
@@ -21,6 +22,7 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.MouseMotionAdapter;
 import java.awt.geom.Arc2D;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Ellipse2D;
@@ -89,6 +91,8 @@ public class IslandWindow extends JWindow implements Serializable {
     private static final int EXPANDED_HEIGHT = 55;
     private static final int EXPAND_ANIM_DURATION_MS = 280;
     private static final int EXPAND_ANIM_FRAME_MS = 10;
+    private static final int SLIDE_ANIM_DURATION_MS = 400;
+    private static final int SLIDE_ANIM_FRAME_MS = 8;
 
     // ── 音乐面板 ──
     private static final int COVER_SIZE = 48;
@@ -147,6 +151,21 @@ public class IslandWindow extends JWindow implements Serializable {
     private boolean isCollapsing = false;
     private Timer hideDelayTimer;
 
+    // ── 电池 ──
+    private transient BatteryMonitor batteryMonitor;
+    private JPanel batteryPanel;
+    private volatile BatteryMonitor.BatteryInfo currentBatteryInfo = BatteryMonitor.BatteryInfo.ABSENT;
+
+    // ── 手势 ──
+    private Point gesturePressPoint;
+    private long gesturePressTime;
+    private boolean gesturePending;
+    private float gestureSlideProgress = 0f;
+    private Timer gestureSlideAnimTimer;
+    /** 音乐面板是否已通过手势在扩展岛中显示 */
+    private boolean musicPanelShownInExpanded = false;
+    private JPanel placeholderPanel;
+
     private Timer animTimer;
 
     private final Object notificationLock = new Object();
@@ -181,6 +200,17 @@ public class IslandWindow extends JWindow implements Serializable {
         monitor.setListener(info -> {
             System.out.println("[IslandWindow] MusicMonitor 回调: " + info);
             SwingUtilities.invokeLater(() -> updateMusicInfo(info));
+        });
+        monitor.start();
+    }
+
+    /** 注入电池监控器，由 IslandApplication 调用 */
+    public void setBatteryMonitor(BatteryMonitor monitor) {
+        if (monitor == null) return;
+        this.batteryMonitor = monitor;
+        System.out.println("[IslandWindow] BatteryMonitor 已注入，开始监听...");
+        monitor.setListener(info -> {
+            SwingUtilities.invokeLater(() -> updateBatteryDisplay(info));
         });
         monitor.start();
     }
@@ -520,6 +550,7 @@ public class IslandWindow extends JWindow implements Serializable {
                         iconChar = WeatherIconMapper.getIconChar(weather.getCondition());
                     }
                     weatherIconLabel.setText(String.valueOf(iconChar));
+
                     if (!isNotificationActive && !isFinishingNotification && isVisible()) {
                         weatherPanel.setVisible(true);
                     }
@@ -804,6 +835,203 @@ public class IslandWindow extends JWindow implements Serializable {
     //  扩展岛（深黑色大号药丸窗口）
     // ═══════════════════════════════════════════
 
+    /** 电池状态更新回调（EDT） */
+    private void updateBatteryDisplay(BatteryMonitor.BatteryInfo info) {
+        currentBatteryInfo = info;
+        if (batteryPanel != null) {
+            batteryPanel.setVisible(info.present);
+            batteryPanel.repaint();
+        }
+    }
+
+    /** 构建圆环电池仪表（弧线进度 + 居中百分比 + 状态文字） */
+    private JPanel buildBatteryPanel() {
+        int panelSize = EXPANDED_HEIGHT - 6;
+
+        JPanel pnl = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                BatteryMonitor.BatteryInfo info = currentBatteryInfo;
+                if (!info.present) return;
+
+                Graphics2D g2d = (Graphics2D) g.create();
+                try {
+                    g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2d.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+
+                    int w = getWidth(), h = getHeight();
+                    int ringDiam = Math.min(w, h) - 8;
+                    int cx = w / 2, cy = h / 2;
+                    int ringOuter = ringDiam / 2;
+                    int ringThickness = 5;
+
+                    // 弧线颜色
+                    Color arcColor;
+                    if (info.charging || info.percentage >= 100) {
+                        arcColor = new Color(0x50, 0xDC, 0x64);
+                    } else if (info.percentage <= 20) {
+                        arcColor = new Color(0xFF, 0x8C, 0x3C);
+                    } else {
+                        arcColor = Color.WHITE;
+                    }
+
+                    // 背景圆环
+                    g2d.setColor(new Color(70, 70, 70));
+                    g2d.setStroke(new BasicStroke(ringThickness, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                    g2d.draw(new Arc2D.Double(cx - ringOuter, cy - ringOuter, ringOuter * 2, ringOuter * 2, 0, 360, Arc2D.OPEN));
+
+                    // 前景弧（从12点顺时针）
+                    double sweep = -360.0 * info.percentage / 100.0;
+                    g2d.setColor(arcColor);
+                    g2d.draw(new Arc2D.Double(cx - ringOuter, cy - ringOuter, ringOuter * 2, ringOuter * 2, 90, sweep, Arc2D.OPEN));
+
+                    // ── 居中百分比数字 ──
+                    g2d.setColor(Color.WHITE);
+                    g2d.setFont(new Font("Microsoft YaHei", Font.PLAIN, 13));
+                    FontMetrics pfm = g2d.getFontMetrics();
+                    String pctText = String.valueOf(info.percentage);
+                    int pctW = pfm.stringWidth(pctText);
+                    int pctY = cy - 2;
+                    g2d.drawString(pctText, cx - pctW / 2, pctY);
+
+                    // ── 状态文字（百分比下方）──
+                    String statusText;
+                    if (!info.present) {
+                        statusText = "无电池";
+                    } else if (info.charging) {
+                        statusText = info.percentage >= 100 ? "满电" : "充电中";
+                    } else if (info.percentage >= 100) {
+                        statusText = "满电";
+                    } else {
+                        statusText = "放电";
+                    }
+                    g2d.setColor(new Color(200, 200, 200));
+                    g2d.setFont(new Font("Microsoft YaHei", Font.PLAIN, 9));
+                    FontMetrics sfm = g2d.getFontMetrics();
+                    int stW = sfm.stringWidth(statusText);
+                    int stY = pctY + sfm.getAscent() + 2;
+                    g2d.drawString(statusText, cx - stW / 2, stY);
+                } finally {
+                    g2d.dispose();
+                }
+            }
+
+            @Override
+            public Dimension getPreferredSize() {
+                return new Dimension(panelSize, panelSize);
+            }
+        };
+        pnl.setOpaque(false);
+        batteryPanel = pnl;
+        pnl.setVisible(currentBatteryInfo.present);
+        return pnl;
+    }
+
+    /** 手势触发：在扩展岛中显示占位面板或音乐面板 */
+    private void showMusicPanelInExpandedIsland() {
+        if (expandedWindow == null || !expandedWindow.isVisible()) return;
+        if (musicPanelShownInExpanded) return;
+        musicPanelShownInExpanded = true;
+
+        boolean hasActiveSession = currentMusicInfo.hasSession()
+                && !currentMusicInfo.getTitle().isEmpty();
+
+        if (hasActiveSession) {
+            // 已有媒体会话 → 直接显示音乐面板
+            System.out.println("[IslandWindow] 手势触发：已有会话，直接显示音乐面板");
+            buildMusicPanel();
+            ensureMusicPanelInExpandedWindow();
+            if (currentMusicInfo.isStrictlyPlaying()) {
+                startCoverRotation();
+                startLyricScrollTimer();
+            }
+            startSlideAnimation(1.0f);
+        } else {
+            // 无媒体会话 → 显示占位面板
+            System.out.println("[IslandWindow] 手势触发：无会话，显示占位面板");
+            if (placeholderPanel == null) {
+                placeholderPanel = new JPanel(new GridBagLayout());
+                placeholderPanel.setOpaque(false);
+                JLabel msg = new JLabel("等待播放...", SwingConstants.CENTER);
+                msg.setForeground(new Color(140, 140, 140));
+                msg.setFont(new Font("Microsoft YaHei", Font.PLAIN, 12));
+                placeholderPanel.add(msg);
+            }
+            Container cp = expandedWindow.getContentPane();
+            if (cp.getComponentCount() > 0) {
+                Component root = cp.getComponent(0);
+                if (root instanceof JPanel) {
+                    JPanel rp = (JPanel) root;
+                    boolean found = false;
+                    for (Component c : rp.getComponents()) {
+                        if (c == placeholderPanel) { found = true; break; }
+                    }
+                    if (!found) {
+                        rp.add(placeholderPanel);
+                        rp.revalidate();
+                        layoutExpandedPanel();
+                    }
+                }
+            }
+            startSlideAnimation(1.0f);
+        }
+    }
+
+    private void startSlideAnimation(float target) {
+        if (gestureSlideAnimTimer != null) gestureSlideAnimTimer.stop();
+        final float from = gestureSlideProgress;
+        final float to = target;
+        final long animStart = System.currentTimeMillis();
+        gestureSlideAnimTimer = new Timer(SLIDE_ANIM_FRAME_MS, e -> {
+            float elapsed = (System.currentTimeMillis() - animStart) / (float) SLIDE_ANIM_DURATION_MS;
+            float t = Math.min(elapsed, 1.0f);
+            float eased = 1 - (1 - t) * (1 - t) * (1 - t) * (1 - t); // quartic ease-out
+            gestureSlideProgress = from + (to - from) * eased;
+            layoutExpandedPanel();
+            if (t >= 1.0f) { gestureSlideAnimTimer.stop(); gestureSlideAnimTimer = null; }
+        });
+        gestureSlideAnimTimer.start();
+    }
+
+    private void layoutExpandedPanel() {
+        if (expandedWindow == null) return;
+        Container cp = expandedWindow.getContentPane();
+        if (cp.getComponentCount() == 0) return;
+        Component root = cp.getComponent(0);
+        if (!(root instanceof JPanel)) return;
+        JPanel rp = (JPanel) root;
+        int pw = rp.getWidth(), ph = rp.getHeight();
+        Insets ins = rp.getInsets();
+        if (ins == null) ins = new Insets(4, 8, 4, 12);
+        int iw = pw - ins.left - ins.right, ih = ph - ins.top - ins.bottom;
+        float progress = Math.max(0f, Math.min(1f, gestureSlideProgress));
+        int offset = (int) (iw * progress);
+
+        for (Component c : rp.getComponents()) {
+            if (c == batteryPanel && batteryPanel != null) {
+                // 电池圆环与左侧半圆圆心精确对齐
+                int leftCenterX = EXPANDED_HEIGHT / 2;
+                int leftCenterY = EXPANDED_HEIGHT / 2;
+                int battSize = batteryPanel.getPreferredSize().width;
+                int battX = leftCenterX - battSize / 2;
+                int battY = leftCenterY - battSize / 2;
+                batteryPanel.setBounds(battX - offset, battY, battSize, battSize);
+            } else if (c == placeholderPanel && placeholderPanel != null && musicPanelShownInExpanded) {
+                placeholderPanel.setBounds(ins.left + iw - offset, ins.top, iw, ih);
+                placeholderPanel.revalidate();
+            } else if (c == musicPanel && musicPanel != null && musicPanelShownInExpanded) {
+                int coverCenterX = EXPANDED_HEIGHT / 2 + 4;
+                int musicX = coverCenterX - COVER_SIZE / 2;
+                int musicW = pw - ins.right - musicX;
+                musicPanel.setBounds(musicX + iw - offset, ins.top, musicW, ih);
+                musicPanel.revalidate();
+            }
+        }
+        rp.revalidate();
+        rp.repaint();
+    }
+
     private void toggleExpandedIsland() {
         if (isExpanding || isCollapsing) {
             return;
@@ -820,6 +1048,13 @@ public class IslandWindow extends JWindow implements Serializable {
             expandedWindow.dispose();
         }
         isExpanding = true;
+
+        // 重置手势状态
+        gesturePending = false;
+        gesturePressPoint = null;
+        gesturePressTime = 0;
+        gestureSlideProgress = 0f;
+        musicPanelShownInExpanded = false;
 
         Point startLoc = getLocation();
         int startW = getWidth();
@@ -840,7 +1075,7 @@ public class IslandWindow extends JWindow implements Serializable {
         expandedWindow.setLocation(startLoc);
         expandedWindow.setSize(startW, startH);
 
-        JPanel panel = new JPanel() {
+        JPanel panel = new JPanel(null) {
             @Override
             protected void paintComponent(Graphics g) {
                 super.paintComponent(g);
@@ -856,39 +1091,68 @@ public class IslandWindow extends JWindow implements Serializable {
             }
         };
         panel.setOpaque(false);
-        panel.setLayout(new BorderLayout());
-        panel.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 12));
 
-        // ── 始终为扩展岛添加内容，避免空白 ──
-        boolean hasMusic = currentMusicInfo != null && currentMusicInfo.isPlaying();
-        System.out.println("[IslandWindow] showExpandedIsland: hasMusic=" + hasMusic
-                + " currentMusicInfo=" + currentMusicInfo);
-        if (hasMusic) {
-            buildMusicPanel();
-            if (musicPanel != null) {
-                updateMusicPanelContent();
-                panel.add(musicPanel, BorderLayout.CENTER);
-                System.out.println("[IslandWindow] 音乐面板已添加: title="
-                        + currentMusicInfo.getTitle() + " artist=" + currentMusicInfo.getArtist());
-            }
-        } else {
-            // 占位标签：区分 daemon 未运行 vs 无音乐播放
-            boolean daemonRunning = WindowsMediaManager.isDaemonRunning();
-            String msg = daemonRunning ? "等待播放..." : "守护进程未运行";
-            JLabel placeholder = new JLabel(msg, SwingConstants.CENTER);
-            placeholder.setForeground(new Color(140, 140, 140));
-            placeholder.setFont(new Font("Microsoft YaHei", Font.PLAIN, 12));
-            placeholder.setName("musicPlaceholder");
-            panel.add(placeholder, BorderLayout.CENTER);
-            System.out.println("[IslandWindow] 无音乐播放，daemonRunning=" + daemonRunning);
-        }
+        JPanel battPnl = buildBatteryPanel();
+        panel.add(battPnl);
 
         expandedWindow.getContentPane().add(panel);
 
+        // ── 手势监听：长按 + 左滑 → 音乐面板 ──
         expandedWindow.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
-                hideExpandedIsland();
+                gesturePressPoint = e.getPoint();
+                gesturePressTime = System.currentTimeMillis();
+                gesturePending = true;
+                gestureSlideProgress = 0f;
+                if (expandedWindow != null) expandedWindow.repaint();
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                if (!gesturePending) return;
+                gesturePending = false;
+
+                long duration = System.currentTimeMillis() - gesturePressTime;
+                int dx = (gesturePressPoint != null) ? e.getX() - gesturePressPoint.x : 0;
+
+                if (duration >= 250 && dx <= -30) {
+                    // 长按 + 左滑 → 显示音乐/占位面板
+                    System.out.println("[IslandWindow] 手势: 长按" + duration
+                            + "ms + 左滑" + dx + "px → 显示面板");
+                    showMusicPanelInExpandedIsland();
+                } else if (musicPanelShownInExpanded && duration >= 250 && dx >= 30) {
+                    // 右滑 → 返回电池视图
+                    System.out.println("[IslandWindow] 手势: 长按" + duration
+                            + "ms + 右滑" + dx + "px → 返回电池");
+                    musicPanelShownInExpanded = false;
+                    startSlideAnimation(0f);
+                } else {
+                    // 默认行为：折叠扩展岛
+                    hideExpandedIsland();
+                }
+                gestureSlideProgress = 0f;
+                if (expandedWindow != null) expandedWindow.repaint();
+            }
+        });
+
+        expandedWindow.addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                if (!gesturePending || gesturePressPoint == null) return;
+                int dx = e.getX() - gesturePressPoint.x;
+                long duration = System.currentTimeMillis() - gesturePressTime;
+                // 左滑超过30px 且长按超过500ms → 视觉反馈
+                if (dx < -30 && duration >= 250) {
+                    gestureSlideProgress = Math.min(1.0f, Math.abs(dx + 30) / 200f);
+                    layoutExpandedPanel();
+                } else if (musicPanelShownInExpanded && dx > 30 && duration >= 250) {
+                    gestureSlideProgress = 1.0f - Math.min(1.0f, Math.abs(dx - 30) / 200f);
+                    layoutExpandedPanel();
+                } else {
+                    gestureSlideProgress = 0f;
+                }
+                if (expandedWindow != null) expandedWindow.repaint();
             }
         });
 
@@ -914,15 +1178,7 @@ public class IslandWindow extends JWindow implements Serializable {
                 expandedWindow.setSize(EXPANDED_WIDTH, targetH);
                 expandedWindow.setLocation(targetX, targetY);
                 isExpanding = false;
-                // 强制布局刷新，确保音乐面板可见
-                expandedWindow.getContentPane().revalidate();
-                expandedWindow.getContentPane().repaint();
-                if (hasMusic) {
-                    if (currentMusicInfo.isStrictlyPlaying()) {
-                        startCoverRotation();
-                        startLyricScrollTimer();
-                    }
-                }
+                layoutExpandedPanel();
             }
         });
         expandTimer.setInitialDelay(0);
@@ -937,6 +1193,14 @@ public class IslandWindow extends JWindow implements Serializable {
         if (expandedWindow == null || isCollapsing) {
             return;
         }
+
+        // 重置手势状态
+        gesturePending = false;
+        gesturePressPoint = null;
+        gesturePressTime = 0;
+        gestureSlideProgress = 0f;
+        musicPanelShownInExpanded = false;
+        if (gestureSlideAnimTimer != null) { gestureSlideAnimTimer.stop(); gestureSlideAnimTimer = null; }
 
         cancelDelayedHide();
 
@@ -987,6 +1251,7 @@ public class IslandWindow extends JWindow implements Serializable {
                 musicTitleLabel = null;
                 musicArtistLabel = null;
                 musicLyricsLabel = null;
+                placeholderPanel = null;
 
                 SwingUtilities.invokeLater(() -> {
                     service.show();
@@ -1138,6 +1403,7 @@ public class IslandWindow extends JWindow implements Serializable {
         boolean isPlaying = info.isPlaying();
         boolean wasStrictly = currentMusicInfo.isStrictlyPlaying();
         boolean isStrictly = info.isStrictlyPlaying();
+        boolean wasSession = currentMusicInfo.hasSession();
         currentMusicInfo = info;
 
         // 检测活跃播放器切换：另一个播放器开始播放了
@@ -1187,23 +1453,30 @@ public class IslandWindow extends JWindow implements Serializable {
             fetchCoverAsync(info.getTitle(), info.getArtist());
         }
 
+        // 媒体会话出现：占位面板 → 自动切换到音乐面板
+        if (info.hasSession() && !wasSession && musicPanelShownInExpanded
+                && placeholderPanel != null && placeholderPanel.getParent() != null) {
+            System.out.println("[IslandWindow] 媒体会话出现，自动切换到音乐面板");
+            ensureMusicPanelInExpandedWindow();
+        }
+
         if (isPlaying && !wasPlaying) {
             cancelDelayedHide();
-            if (isExpandedIslandVisible()) ensureMusicPanelInExpandedWindow();
-            if (isStrictly && isExpandedIslandVisible()) { startCoverRotation(); startLyricScrollTimer(); }
+            if (isStrictly && musicPanelShownInExpanded) { startCoverRotation(); startLyricScrollTimer(); }
         } else if (!isPlaying && wasPlaying) {
             stopCoverRotation(); stopLyricScrollTimer();
             currentLyricIndex = -1; lastFetchedTrackId = "";
             if (isExpandedIslandVisible()) scheduleDelayedHide();
         } else if (isPlaying && isExpandedIslandVisible()) {
-            ensureMusicPanelInExpandedWindow();
-            if (isStrictly && !wasStrictly) { startCoverRotation(); startLyricScrollTimer(); }
-            else if (!isStrictly && wasStrictly) { stopCoverRotation(); stopLyricScrollTimer(); }
-            else if (isStrictly) {
-                if (coverRotationTimer == null) startCoverRotation();
-                if (lyricScrollTimer == null) startLyricScrollTimer();
+            if (musicPanelShownInExpanded) {
+                if (isStrictly && !wasStrictly) { startCoverRotation(); startLyricScrollTimer(); }
+                else if (!isStrictly && wasStrictly) { stopCoverRotation(); stopLyricScrollTimer(); }
+                else if (isStrictly) {
+                    if (coverRotationTimer == null) startCoverRotation();
+                    if (lyricScrollTimer == null) startLyricScrollTimer();
+                }
+                updateProgressDisplay(info);
             }
-            updateProgressDisplay(info);
         }
     }
 
@@ -1217,29 +1490,30 @@ public class IslandWindow extends JWindow implements Serializable {
         if (!(root instanceof JPanel)) return;
         JPanel rp = (JPanel) root;
 
-        // 如果占位符存在，先移除
+        // 移除占位面板
+        boolean replacedPlaceholder = false;
+        if (placeholderPanel != null && placeholderPanel.getParent() == rp) {
+            rp.remove(placeholderPanel);
+            replacedPlaceholder = true;
+            System.out.println("[IslandWindow] 占位面板已移除，切换到音乐面板");
+        }
+
+        // 添加音乐面板（如未添加）
+        boolean found = false;
         for (Component c : rp.getComponents()) {
-            if ("musicPlaceholder".equals(c.getName())) {
-                rp.remove(c);
-                break;
-            }
+            if (c == musicPanel) { found = true; break; }
         }
-
-        // 已在窗口中 → 只需刷新内容
-        if (musicPanel.getParent() == rp) {
+        if (!found) {
             updateMusicPanelContent();
-            rp.revalidate();
-            rp.repaint();
-            System.out.println("[IslandWindow] 音乐面板已刷新");
-            return;
+            rp.add(musicPanel);
+            System.out.println("[IslandWindow] 音乐面板已添加到扩展岛");
+        } else {
+            updateMusicPanelContent();
         }
-
-        // 首次添加：填充内容后加入窗口
-        updateMusicPanelContent();
-        rp.add(musicPanel, BorderLayout.CENTER);
-        rp.revalidate();
-        rp.repaint();
-        System.out.println("[IslandWindow] 音乐面板已动态添加到扩展岛");
+        // 仅布局变更时才触发全量重排，避免歌词闪烁
+        if (replacedPlaceholder || !found) {
+            layoutExpandedPanel();
+        }
     }
 
     private void updateMusicPanelContent() {
@@ -1445,7 +1719,6 @@ public class IslandWindow extends JWindow implements Serializable {
 
     private void startCoverRotation() {
         if (coverRotationTimer != null && coverRotationTimer.isRunning()) return;
-        coverRotationAngle = 0.0;
         coverRotationTimer = new Timer(COVER_ROTATION_FRAME_MS, e -> {
             coverRotationAngle = (coverRotationAngle + COVER_ROTATION_DEG_PER_FRAME) % 360.0;
             if (musicCoverLabel != null) musicCoverLabel.repaint();
@@ -1492,9 +1765,14 @@ public class IslandWindow extends JWindow implements Serializable {
 
             stopCoverRotation();
             stopLyricScrollTimer();
+            if (gestureSlideAnimTimer != null) { gestureSlideAnimTimer.stop(); gestureSlideAnimTimer = null; }
 
             if (musicMonitor != null) {
                 musicMonitor.stop();
+            }
+
+            if (batteryMonitor != null) {
+                batteryMonitor.stop();
             }
 
             if (bluetoothMonitor != null) {

@@ -1,5 +1,6 @@
 package com.island;
 
+import com.island.battery.BatteryMonitor;
 import com.island.config.AppConstants;
 import com.island.island.ui.IslandWindow;
 import com.island.music.MusicMonitor;
@@ -72,6 +73,10 @@ public class IslandApplication {
             // 初始化音乐监控（依赖 .NET 8 MediaInfoDaemon 后台运行）
             MusicMonitor musicMonitor = new MusicMonitor();
             island.setMusicMonitor(musicMonitor);
+
+            // 初始化电池监控
+            BatteryMonitor batteryMonitor = new BatteryMonitor();
+            island.setBatteryMonitor(batteryMonitor);
 
             Toolkit toolkit = Toolkit.getDefaultToolkit();
             Dimension screenSize = toolkit.getScreenSize();
@@ -222,15 +227,21 @@ public class IslandApplication {
 
     /**
      * 探测应用基准目录（JAR 所在目录或工作目录）。
+     * <p>IDE 环境（target/classes）下会向上查找包含 pom.xml 的项目根目录。</p>
      */
     private static String detectBaseDir() {
         try {
-            File jarFile = new File(
+            File codeLocation = new File(
                     IslandApplication.class.getProtectionDomain()
                             .getCodeSource().getLocation().toURI());
-            String parent = jarFile.getParent();
-            if (parent != null) {
-                return parent;
+            // 若是目录（IDE 环境通常为 target/classes），从父级开始探测
+            File dir = codeLocation.isDirectory() ? codeLocation : codeLocation.getParentFile();
+            while (dir != null) {
+                // 以 pom.xml 存在作为项目根目录的标识
+                if (new File(dir, "pom.xml").exists()) {
+                    return dir.getAbsolutePath();
+                }
+                dir = dir.getParentFile();
             }
         } catch (Exception ignored) { }
         return System.getProperty("user.dir");
