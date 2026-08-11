@@ -35,11 +35,8 @@ class Program
     static string _interpTrackId = "";            // 插值对应的歌曲，切歌时重置
     static string _lastSrcAppId = "";             // 检测会话切换
     static string _lastTrackId = "";              // 检测歌曲切换（title|artist 组合变化）
-    const long UIA_THROTTLE_MS = 500;             // UIA 调用节流间隔（避免性能问题）
-    static long _uiaLastCheckMs = 0;              // 上次 UIA 调用的时间戳
-    static long _lastKnownPosition = 0;           // 上次成功获取的位置（SMTC 或 UIA），失败时保留
+    static long _lastKnownPosition = 0;           // 上次成功获取的位置，SMTC 失败时保留
     static int _zeroPositionCount = 0;            // 连续未获取到新位置的次数（诊断用）
-    static string _lastPositionSource = "NONE";   // 上次位置来源：SMTC/UIA/NONE
     // TimelinePropertiesChanged 事件缓存（从事件参数直接提取，避免轮询回读的竞态）
     static long _cachedPositionTicks = 0;
     static long _cachedEndTimeTicks = 0;
@@ -135,8 +132,15 @@ class Program
     }
 
     /// <summary>
-    /// 获取当前活跃的白名单 SMTC 会话。
-    /// 只返回 sourceAppId 在白名单中的会话，忽略浏览器等非音乐播放器。
+    /// 获取当前活跃的白名单 SMTC 会话，<b>优先选择正在播放 (Playing) 的会话</b>。
+    ///
+    /// <para>多播放器场景（如网易云+QQ音乐同时运行）下的选择策略：</para>
+    /// <list type="number">
+    /// <item>收集所有白名单会话并读取各自的 PlaybackStatus</item>
+    /// <item>优先返回 <c>Playing</c> 状态的会话（哪个播放器正在出声就显示哪个）</item>
+    /// <item>其次返回 <c>Paused</c> 状态的会话</item>
+    /// <item>最后降级到 GetCurrentSession / 首个白名单会话</item>
+    /// </list>
     /// </summary>
     static async Task<GlobalSystemMediaTransportControlsSession?> GetS()
     {
@@ -144,42 +148,86 @@ class Program
         {
             var m = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
 
-            // 1. GetCurrentSession：必须过白名单
+            // ── 1. 收集所有会话 ──
+            var sessions = new List<GlobalSystemMediaTransportControlsSession>();
+            foreach (var x in m.GetSessions()) sessions.Add(x);
+
+            // ── 2. 收集所有白名单会话及其播放状态 ──
+            var whitelisted = new List<(GlobalSystemMediaTransportControlsSession session, string status, string src)>();
+            foreach (var x in sessions)
+            {
+                try
+                {
+                    string src = x.SourceAppUserModelId ?? "";
+                    if (string.IsNullOrEmpty(src)) continue;
+                    if (!SrcWhitelist.Any(w => src.ToLowerInvariant().Contains(w)))
+                    {
+                        var hex = string.Join(" ", src.Select(c => ((int)c).ToString("X2")));
+                        Console.Error.WriteLine($"[Daemon] ⚠ 白名单未命中: \"{src}\" (hex: {hex})");
+                        continue;
+                    }
+                    string status = "Closed";
+                    try { var pb = x.GetPlaybackInfo(); status = pb?.PlaybackStatus.ToString() ?? "Closed"; }
+                    catch { }
+                    whitelisted.Add((x, status, src));
+                }
+                catch { }
+            }
+
+            if (whitelisted.Count == 0)
+            {
+                // 所有会话均不在白名单 → 兜底：检测到音乐进程在运行 → 使用第一个会话
+                if (sessions.Count > 0)
+                {
+                    Console.Error.WriteLine($"[Daemon] 所有 {sessions.Count} 个会话均不在白名单 (首: {sessions[0].SourceAppUserModelId})");
+                    if (ScanProc())
+                    {
+                        Console.Error.WriteLine($"[Daemon] 兜底：音乐进程在运行，使用首个会话: {sessions[0].SourceAppUserModelId}");
+                        return sessions[0];
+                    }
+                }
+                return null;
+            }
+
+            // ── 3. 优先级 1：Playing 状态的会话（关键修复：多播放器场景下优先活跃播放器）──
+            var playing = whitelisted.FirstOrDefault(w =>
+                w.status.Equals("Playing", StringComparison.OrdinalIgnoreCase));
+            if (playing.session != null)
+            {
+                Console.Error.WriteLine($"[Daemon] ✅ Playing 优先 → {playing.src} status={playing.status}");
+                return playing.session;
+            }
+
+            // ── 4. 优先级 2：Paused 状态的会话 ──
+            var paused = whitelisted.FirstOrDefault(w =>
+                w.status.Equals("Paused", StringComparison.OrdinalIgnoreCase));
+            if (paused.session != null)
+            {
+                Console.Error.WriteLine($"[Daemon] ⏸ Paused 会话 → {paused.src}");
+                return paused.session;
+            }
+
+            // ── 5. 优先级 3：GetCurrentSession（白名单内）──
             var cur = m.GetCurrentSession();
-            if (IsWhitelistedSession(cur)) {
+            if (IsWhitelistedSession(cur))
+            {
                 Console.Error.WriteLine($"[Daemon] GetCurrentSession → {cur!.SourceAppUserModelId}");
                 return cur;
             }
-            if (cur != null) {
+            if (cur != null)
+            {
                 Console.Error.WriteLine($"[Daemon] GetCurrentSession 被白名单拦截: {cur.SourceAppUserModelId}");
-                // 兜底：若音乐播放器进程正在运行，认为此会话可信
-                if (ScanProc()) {
+                if (ScanProc())
+                {
                     Console.Error.WriteLine($"[Daemon] 兜底(GetCurrentSession)：音乐进程在运行，使用此会话: {cur.SourceAppUserModelId}");
                     return cur;
                 }
             }
 
-            // 2. 枚举所有会话，取第一个白名单匹配
-            var sessions = new List<GlobalSystemMediaTransportControlsSession>();
-            foreach (var x in m.GetSessions()) sessions.Add(x);
-
-            foreach (var x in sessions) {
-                if (IsWhitelistedSession(x)) {
-                    Console.Error.WriteLine($"[Daemon] 枚举命中白名单: {x.SourceAppUserModelId}");
-                    return x;
-                }
-            }
-
-            // 3. 白名单全不匹配 → 兜底：检测到音乐进程在运行 → 使用第一个会话
-            if (sessions.Count > 0) {
-                Console.Error.WriteLine($"[Daemon] 所有 {sessions.Count} 个会话均不在白名单 (首: {sessions[0].SourceAppUserModelId})");
-                // 兜底：若音乐播放器进程正在运行，认为此会话可信（允许非标准 AppUserModelId 的播放器）
-                if (ScanProc()) {
-                    Console.Error.WriteLine($"[Daemon] 兜底：音乐进程在运行，使用首个会话: {sessions[0].SourceAppUserModelId}");
-                    return sessions[0];
-                }
-            }
-            return null;
+            // ── 6. 优先级 4：第一个白名单会话（Closed/Stopped 等）──
+            var first = whitelisted[0];
+            Console.Error.WriteLine($"[Daemon] 首个白名单会话: {first.src} status={first.status}");
+            return first.session;
         }
         catch { return null; }
     }
@@ -266,7 +314,6 @@ class Program
                 if (sessionChanged || trackChanged)
                 {
                     _lastKnownPosition = 0;
-                    _uiaLastCheckMs = 0;
                     _accumulatedPlayTicks = 0;    // ★ 切歌 → 累积时长归零
                     _playStartStopwatch = 0;
                     _wasPlaying = false;
@@ -318,41 +365,11 @@ class Program
                 }
                 _wasPlaying = isPlaying;
 
-                // 第 2 层：UIA 进度条兜底（每 500ms 一次，切歌时立即尝试）
-                long uiaTicks = 0;
-                if (rawPTicks == 0 && isPlaying)
-                {
-                    if (_uiaLastCheckMs == 0 || (nowMs - _uiaLastCheckMs) >= UIA_THROTTLE_MS)
-                    {
-                        uiaTicks = ReadSliderPositionTicks();
-                        if (uiaTicks > 0)
-                        {
-                            _uiaLastCheckMs = nowMs;
-                            Console.Error.WriteLine($"[Daemon] UIA OK pos={uiaTicks / 10000}ms");
-                        }
-                        else
-                        {
-                            _uiaLastCheckMs = nowMs;
-                            if (_zeroPositionCount == 0)
-                                Console.Error.WriteLine("[Daemon] UIA 读取失败（窗口可能最小化或CEF渲染）");
-                        }
-                    }
-                }
-
-                // 融合：SMTC 优先 → UIA 兜底 → 保留上次位置
-                string posSrc = "NONE";
+                // SMTC 拿到位置 → 使用；否则保留上次值
                 if (rawPTicks > 0)
                 {
                     p = rawPTicks;
                     _lastKnownPosition = rawPTicks;
-                    posSrc = "SMTC";
-                    _zeroPositionCount = 0;
-                }
-                else if (uiaTicks > 0)
-                {
-                    p = uiaTicks;
-                    _lastKnownPosition = uiaTicks;
-                    posSrc = "UIA";
                     _zeroPositionCount = 0;
                 }
                 else
@@ -360,14 +377,7 @@ class Program
                     p = _lastKnownPosition;
                     _zeroPositionCount++;
                     if (_zeroPositionCount == 1 || _zeroPositionCount % 10 == 0)
-                        Console.Error.WriteLine($"[Daemon] ⚠ 位置未更新 x{_zeroPositionCount} (SMTC={rawPTicks},UIA={uiaTicks})，保留上次值={p / 10000}ms");
-                }
-
-                // 位置来源变化时输出日志
-                if (!posSrc.Equals(_lastPositionSource, StringComparison.Ordinal))
-                {
-                    Console.Error.WriteLine($"[Daemon] 位置来源切换: {_lastPositionSource} → {posSrc} p={p / 10000}ms");
-                    _lastPositionSource = posSrc;
+                        Console.Error.WriteLine($"[Daemon] ⚠ 位置未更新 x{_zeroPositionCount} (SMTC={rawPTicks})，保留上次值={p / 10000}ms");
                 }
             }
         }
@@ -381,9 +391,7 @@ class Program
             _interpTrackId = "";
             _lastSrcAppId = "";
             _lastTrackId = "";
-            _uiaLastCheckMs = 0;
             _zeroPositionCount = 0;
-            _lastPositionSource = "NONE";
         }
         // hasSession: 白名单 + 进程运行 + 有歌名
         bool hs = !string.IsNullOrEmpty(t) && IsSourceWhitelistedAndRunning(src);
@@ -403,57 +411,6 @@ class Program
         sb.Append("\"isMinimized\":").Append(minimized ? "true" : "false");
         sb.Append("}");
         return sb.ToString();
-    }
-
-    /// <summary>
-    /// 通过 UI Automation 读取音乐播放器窗口的进度条滑块位置。
-    /// </summary>
-    static long ReadSliderPositionTicks()
-    {
-        try
-        {
-            foreach (string procName in Players)
-            {
-                Process[]? procs = null;
-                try { procs = Process.GetProcessesByName(procName); } catch { continue; }
-                if (procs == null || procs.Length == 0) continue;
-                foreach (var proc in procs)
-                {
-                    try
-                    {
-                        IntPtr hWnd = proc.MainWindowHandle;
-                        if (hWnd == IntPtr.Zero) continue;
-                        var window = System.Windows.Automation.AutomationElement.FromHandle(hWnd);
-                        if (window == null) continue;
-                        var sliders = window.FindAll(
-                            System.Windows.Automation.TreeScope.Descendants,
-                            new System.Windows.Automation.PropertyCondition(
-                                System.Windows.Automation.AutomationElement.ControlTypeProperty,
-                                System.Windows.Automation.ControlType.Slider));
-                        if (sliders == null) continue;
-                        foreach (System.Windows.Automation.AutomationElement slider in sliders)
-                        {
-                            try
-                            {
-                                var range = slider.GetCurrentPattern(
-                                    System.Windows.Automation.RangeValuePattern.Pattern)
-                                    as System.Windows.Automation.RangeValuePattern;
-                                if (range != null && range.Current.Maximum > 0)
-                                {
-                                    double value = range.Current.Value;
-                                    if (value >= 0)
-                                        return (long)(value * 10000);
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                    catch { }
-                }
-            }
-        }
-        catch { }
-        return 0;
     }
 
     static void Write(string c) {

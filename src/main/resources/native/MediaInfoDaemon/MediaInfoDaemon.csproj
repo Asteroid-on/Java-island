@@ -9,8 +9,6 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <UseWindowsForms>true</UseWindowsForms>
-    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
 </Project>

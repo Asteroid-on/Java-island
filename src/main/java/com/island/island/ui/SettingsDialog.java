@@ -1,6 +1,7 @@
 package com.island.island.ui;
 
 import com.island.config.AppConstants;
+import com.island.util.WindowsStartupManager;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -155,8 +156,47 @@ public class SettingsDialog extends JDialog {
         trayCb.setBackground(C_CARD);
         trayCb.setFocusPainted(false);
         trayCb.setBorder(new EmptyBorder(2, 0, 2, 0));
+        trayCb.setSelected(AppConstants.isMinimizeToTrayEnabled());
+        trayCb.addActionListener(e ->
+                AppConstants.setMinimizeToTrayEnabled(trayCb.isSelected()));
 
-        p.add(sectionCard("启动", new Component[]{ trayCb }));
+        JCheckBox autoStartCb = new JCheckBox("开机时自动启动");
+        autoStartCb.setFont(F_BODY);
+        autoStartCb.setForeground(C_TEXT);
+        autoStartCb.setBackground(C_CARD);
+        autoStartCb.setFocusPainted(false);
+        autoStartCb.setBorder(new EmptyBorder(2, 0, 2, 0));
+
+        // 以注册表/快捷方式实际状态为准，修正持久化
+        boolean actualRegistered = WindowsStartupManager.isRegistered();
+        if (AppConstants.isAutoStartEnabled() != actualRegistered) {
+            AppConstants.setAutoStartEnabled(actualRegistered);
+        }
+        autoStartCb.setSelected(actualRegistered);
+
+        autoStartCb.addActionListener(e -> {
+            boolean enabled = autoStartCb.isSelected();
+            AppConstants.setAutoStartEnabled(enabled);
+            try {
+                if (enabled) {
+                    WindowsStartupManager.register();
+                } else {
+                    WindowsStartupManager.unregister();
+                }
+            } catch (Exception ex) {
+                // 回滚 UI 与持久化状态
+                autoStartCb.setSelected(!enabled);
+                AppConstants.setAutoStartEnabled(!enabled);
+                JOptionPane.showMessageDialog(SettingsDialog.this,
+                        "操作失败：" + ex.getMessage()
+                                + "\n请尝试以管理员身份运行。",
+                        "开机自启", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        p.add(sectionCard("启动", new Component[]{
+                trayCb, Box.createVerticalStrut(6), autoStartCb
+        }));
         p.add(Box.createVerticalStrut(12));
 
         JComboBox<String> langCb = new JComboBox<>(new String[]{"中文（简体）", "English"});

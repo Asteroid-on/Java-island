@@ -125,6 +125,8 @@ public class IslandWindow extends JWindow implements Serializable {
     private String lastFetchedTrackId = "";
     private String lastFetchedCoverTrackId = "";
     private String lastCoverBase64 = "";
+    /** 上一次处于严格播放状态的来源播放器标识，用于检测活跃播放器切换 */
+    private String lastActiveSourceAppId = "";
     // 仅使用 daemon 汇报的 positionTicks 作为歌词进度
     // fallback 字段已废弃，wall-clock 自推进机制已移除
     @Deprecated private long fallbackBaseMs = 0;
@@ -1138,14 +1140,15 @@ public class IslandWindow extends JWindow implements Serializable {
         boolean isStrictly = info.isStrictlyPlaying();
         currentMusicInfo = info;
 
-        System.out.println("[IslandWindow] updateMusicInfo: wasPlaying=" + wasPlaying
-                + " isPlaying=" + isPlaying + " expandedVisible=" + isExpandedIslandVisible());
-
-        // 歌词进度完全依赖 daemon 汇报的 positionTicks
-
-        String trackId = info.getTitle() + "|" + info.getArtist();
-        if (info.hasSession() && !trackId.equals(lastFetchedTrackId) && !info.getTitle().isEmpty()) {
-            lastFetchedTrackId = trackId;
+        // 检测活跃播放器切换：另一个播放器开始播放了
+        boolean activeSourceSwitched = info.isStrictlyPlaying()
+                && !info.getSourceAppId().isEmpty()
+                && !info.getSourceAppId().equals(lastActiveSourceAppId);
+        if (activeSourceSwitched) {
+            System.out.println("[IslandWindow] 🔄 活跃播放器切换: "
+                    + lastActiveSourceAppId + " → " + info.getSourceAppId());
+            lastActiveSourceAppId = info.getSourceAppId();
+            // 强制刷新歌词和封面，因为播放器来源变了
             lyricsService.clear();
             lrcLines = Collections.emptyList();
             currentLyricIndex = -1;
@@ -1154,7 +1157,32 @@ public class IslandWindow extends JWindow implements Serializable {
             fetchingCover = false;
             musicCoverImage = null;
             lastCoverBase64 = "";
+            lastFetchedTrackId = "";
+            lastFetchedCoverTrackId = "";
             if (musicLyricsLabel != null) { musicLyricsLabel.setText(" "); musicLyricsLabel.repaint(); }
+        }
+
+        System.out.println("[IslandWindow] updateMusicInfo: wasPlaying=" + wasPlaying
+                + " isPlaying=" + isPlaying + " expandedVisible=" + isExpandedIslandVisible()
+                + " srcSwitched=" + activeSourceSwitched);
+
+        // 歌词进度完全依赖 daemon 汇报的 positionTicks
+
+        String trackId = info.getTitle() + "|" + info.getArtist();
+        if (info.hasSession() && !trackId.equals(lastFetchedTrackId) && !info.getTitle().isEmpty()) {
+            lastFetchedTrackId = trackId;
+            if (!activeSourceSwitched) {
+                // 切歌时重置状态（但活跃播放器切换时已在上面重置过，避免重复操作）
+                lyricsService.clear();
+                lrcLines = Collections.emptyList();
+                currentLyricIndex = -1;
+                lastDaemonEndTimeMs = 0;
+                fetchingLyrics = false;
+                fetchingCover = false;
+                musicCoverImage = null;
+                lastCoverBase64 = "";
+                if (musicLyricsLabel != null) { musicLyricsLabel.setText(" "); musicLyricsLabel.repaint(); }
+            }
             fetchLyricsAsync(info.getTitle(), info.getArtist());
             fetchCoverAsync(info.getTitle(), info.getArtist());
         }

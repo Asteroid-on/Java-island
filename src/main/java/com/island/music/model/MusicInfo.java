@@ -56,12 +56,13 @@ public final class MusicInfo {
         return hasSession && "Playing".equalsIgnoreCase(playbackStatus);
     }
 
-    /** 是否同一首歌（去重用） */
+    /** 是否同一首歌（去重用，含来源播放器标识） */
     public boolean isSameSong(MusicInfo other) {
         if (other == null) return false;
         return Objects.equals(title, other.title)
                 && Objects.equals(artist, other.artist)
-                && Objects.equals(playbackStatus, other.playbackStatus);
+                && Objects.equals(playbackStatus, other.playbackStatus)
+                && Objects.equals(sourceAppId, other.sourceAppId);
     }
 
     public static Builder builder() {

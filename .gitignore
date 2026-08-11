@@ -30,6 +30,7 @@ bin/
 
 ### .NET daemon ###
 MediaInfoDaemon.exe
+MediaInfoDaemon.pdb
 MediaInfoDaemon_old.exe
 MediaInfoHelper.exe
 src/main/resources/native/MediaInfoDaemon/bin/
