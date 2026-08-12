@@ -7,6 +7,7 @@ import com.island.island.service.impl.DynamicIslandServiceImpl;
 import com.island.island.ui.IslandWindow;
 import com.island.island.ui.SettingsDialog;
 import com.island.util.AnimationUtil;
+import com.island.util.AppLogger;
 import com.island.util.SvgIcon;
 
 import java.awt.*;
@@ -40,7 +41,7 @@ public class SystemTrayManager {
 
     private void setupSystemTray() {
         if (!SystemTray.isSupported()) {
-            System.out.println("系统不支持系统托盘，程序退出。");
+            AppLogger.error("SystemTray", "系统不支持系统托盘，程序退出");
             System.exit(0);
         }
 
@@ -72,8 +73,7 @@ public class SystemTrayManager {
         try {
             tray.add(trayIcon);
         } catch (AWTException e) {
-            System.err.println("无法将图标添加到系统托盘。");
-            e.printStackTrace();
+            AppLogger.error("SystemTray", "托盘图标添加失败", e);
         }
     }
 
@@ -316,7 +316,7 @@ public class SystemTrayManager {
      */
     private void setupStateListener() {
         service.addStateListener((oldState, newState) -> {
-            System.out.println("状态变化: " + oldState + " -> " + newState);
+            AppLogger.info("DynamicIsland", "状态变化: " + oldState + " -> " + newState);
         });
     }
 

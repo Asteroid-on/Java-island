@@ -5,6 +5,10 @@ import com.island.config.AppConstants;
 import com.island.island.ui.IslandWindow;
 import com.island.music.MusicMonitor;
 import com.island.tray.SystemTrayManager;
+import com.island.util.AppLogger;
+import com.island.util.WindowsTheme;
+import com.formdev.flatlaf.FlatDarkLaf;
+import com.formdev.flatlaf.FlatLightLaf;
 
 import javax.swing.*;
 import java.awt.*;
@@ -12,6 +16,7 @@ import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.util.Locale;
 
 /**
  * 云隙泡应用启动类。
@@ -36,7 +41,7 @@ public class IslandApplication {
     public static void main(String[] args) {
         // ── 1. 单实例锁 ──
         if (!acquireInstanceLock()) {
-            System.err.println("[IslandApplication] 已有实例在运行，退出。");
+            AppLogger.warn("IslandApplication", "已有实例在运行，退出。");
             System.exit(0);
         }
 
@@ -59,10 +64,18 @@ public class IslandApplication {
         // ── 4. UI 初始化 ──
         SwingUtilities.invokeLater(() -> {
             try {
-                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+                // 跟随 Windows 系统主题：深色用 FlatDarkLaf，浅色用 FlatLightLaf
+                if (WindowsTheme.isDarkMode()) {
+                    FlatDarkLaf.setup();
+                } else {
+                    FlatLightLaf.setup();
+                }
             } catch (Exception e) {
-                e.printStackTrace();
+                AppLogger.warn("IslandApplication", "设置 FlatLaf 主题失败", e);
             }
+            // 依据语言设置切换默认区域：影响时间/日期等本地化格式（时间岛显示随语言切换）
+            Locale.setDefault("en".equals(AppConstants.getLanguage())
+                    ? Locale.ENGLISH : Locale.SIMPLIFIED_CHINESE);
 
             IslandWindow island = new IslandWindow();
 
@@ -106,7 +119,7 @@ public class IslandApplication {
         // ── JVM 关闭钩子 ──
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             releaseInstanceLock();
-            System.out.println("[IslandApplication] 应用已退出。");
+            AppLogger.info("IslandApplication", "应用已退出。");
         }));
     }
 
@@ -127,7 +140,7 @@ public class IslandApplication {
                     0,
                     InetAddress.getLoopbackAddress());
             instanceLock.setReuseAddress(true);
-            System.out.println("[IslandApplication] 单实例锁已获取 (port="
+            AppLogger.info("IslandApplication", "单实例锁已获取 (port="
                     + AppConstants.SINGLE_INSTANCE_PORT + ")");
             return true;
         } catch (IOException e) {
@@ -154,7 +167,7 @@ public class IslandApplication {
      */
     private static void launchDaemons() {
         String baseDir = detectBaseDir();
-        System.out.println("[IslandApplication] 守护进程基准目录: " + baseDir);
+        AppLogger.info("IslandApplication", "守护进程基准目录: " + baseDir);
 
         // ── MediaInfoDaemon (.NET 8 SMTC 媒体信息守护进程) ──
         File daemonExe = new File(baseDir, "MediaInfoDaemon.exe");
@@ -166,13 +179,12 @@ public class IslandApplication {
                         .redirectOutput(ProcessBuilder.Redirect.appendTo(
                                 new File(baseDir, "daemon.log")))
                         .start();
-                System.out.println("[IslandApplication] MediaInfoDaemon 已启动");
+                AppLogger.info("IslandApplication", "MediaInfoDaemon 已启动");
             } catch (IOException e) {
-                System.err.println("[IslandApplication] MediaInfoDaemon 启动失败: "
-                        + e.getMessage());
+                AppLogger.error("IslandApplication", "MediaInfoDaemon 启动失败", e);
             }
         } else {
-            System.err.println("[IslandApplication] MediaInfoDaemon.exe 未找到: "
+            AppLogger.error("IslandApplication", "MediaInfoDaemon.exe 未找到: "
                     + daemonExe.getAbsolutePath());
         }
 
@@ -186,13 +198,12 @@ public class IslandApplication {
                         .redirectOutput(ProcessBuilder.Redirect.appendTo(
                                 new File(baseDir, "daemon.log")))
                         .start();
-                System.out.println("[IslandApplication] ncm-server 已启动");
+                AppLogger.info("IslandApplication", "ncm-server 已启动");
             } catch (IOException e) {
-                System.err.println("[IslandApplication] ncm-server 启动失败: "
-                        + e.getMessage());
+                AppLogger.error("IslandApplication", "ncm-server 启动失败", e);
             }
         } else {
-            System.err.println("[IslandApplication] ncm-server.exe 未找到: "
+            AppLogger.error("IslandApplication", "ncm-server.exe 未找到: "
                     + ncmExe.getAbsolutePath());
         }
 
@@ -208,18 +219,17 @@ public class IslandApplication {
                         .redirectOutput(ProcessBuilder.Redirect.appendTo(
                                 new File(baseDir, "daemon.log")))
                         .start();
-                System.out.println("[IslandApplication] qqmusic-api 已启动 (node="
+                AppLogger.info("IslandApplication", "qqmusic-api 已启动 (node="
                         + nodeExe + ")");
             } catch (IOException e) {
-                System.err.println("[IslandApplication] qqmusic-api 启动失败: "
-                        + e.getMessage());
+                AppLogger.error("IslandApplication", "qqmusic-api 启动失败", e);
             }
         } else {
             if (nodeExe == null) {
-                System.err.println("[IslandApplication] qqmusic-api 未能启动: "
+                AppLogger.error("IslandApplication", "qqmusic-api 未能启动: "
                         + "未找到 Node.js，请安装 Node.js (>=18)");
             } else {
-                System.err.println("[IslandApplication] qqmusic-api 未能启动: "
+                AppLogger.error("IslandApplication", "qqmusic-api 未能启动: "
                         + "QQMusicapi 目录不完整");
             }
         }

@@ -1,6 +1,7 @@
 package com.island.weather;
 
 import com.island.util.CityCoordinateTable;
+import com.island.util.AppLogger;
 import com.island.util.WindowsLocationProvider;
 import org.json.JSONObject;
 import java.net.URI;
@@ -96,7 +97,7 @@ public class JuheWeatherService {
                 return name;
             }
         }
-        System.err.println("[聚合数据] 使用默认: " + CityCoordinateTable.DEFAULT_CITY);
+        AppLogger.warn("Weather", "聚合数据定位失败，使用默认: " + CityCoordinateTable.DEFAULT_CITY);
         return CityCoordinateTable.DEFAULT_CITY;
     }
 
@@ -105,7 +106,7 @@ public class JuheWeatherService {
     // 城市坐标表已迁移至 CityCoordinateTable 工具类
 
     private void handleError(String error) {
-        System.err.println("[聚合数据] " + error);
+        AppLogger.warn("Weather", "聚合数据: " + error);
         if (listener != null) listener.onWeatherError(error);
     }
 }

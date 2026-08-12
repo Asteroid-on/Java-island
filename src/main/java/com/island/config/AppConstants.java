@@ -15,8 +15,11 @@ public final class AppConstants {
     private static final String PREF_KEY_CACHE_DIR = "cache.dir";
     private static final String PREF_KEY_AUTO_START = "auto.start";
     private static final String PREF_KEY_MINIMIZE_TO_TRAY = "minimize.to.tray";
+    private static final String PREF_KEY_LOG_DIR = "log.dir";
     private static volatile String customCacheDir;
     private static volatile Runnable onCacheDirChange;
+    private static volatile String customLogDir;
+    private static volatile Runnable onLogDirChange;
 
     /** 单实例锁定端口 */
     public static final int SINGLE_INSTANCE_PORT = 9127;
@@ -86,6 +89,96 @@ public final class AppConstants {
     /** 缓存目录变更时触发回调（由 LyricsService 注册）。 */
     public static void setOnCacheDirChange(Runnable listener) {
         onCacheDirChange = listener;
+    }
+
+    // ── 日志目录 ──
+
+    /** 日志目录默认值：位于用户目录下，无需管理员权限即可读写。 */
+    public static final String LOG_DIR_DEFAULT = System.getProperty("user.home")
+            + File.separator + ".java-island" + File.separator + "logs";
+
+    /** 获取当前生效的日志目录。优先级：用户设置 → 用户目录默认值。 */
+    public static String getLogDir() {
+        if (customLogDir != null) return customLogDir;
+        try {
+            String saved = Preferences.userNodeForPackage(AppConstants.class)
+                    .get(PREF_KEY_LOG_DIR, null);
+            if (saved != null && !saved.isBlank()) {
+                customLogDir = saved;
+                return saved;
+            }
+        } catch (Exception ignored) {}
+        return LOG_DIR_DEFAULT;
+    }
+
+    /** 更新日志目录并持久化到 Preferences。设为空字符串恢复默认。 */
+    public static void setLogDir(String dir) {
+        customLogDir = (dir == null || dir.isBlank()) ? null : dir;
+        try {
+            if (customLogDir != null) {
+                Preferences.userNodeForPackage(AppConstants.class)
+                        .put(PREF_KEY_LOG_DIR, customLogDir);
+            } else {
+                Preferences.userNodeForPackage(AppConstants.class)
+                        .remove(PREF_KEY_LOG_DIR);
+            }
+        } catch (Exception ignored) {}
+        Runnable r = onLogDirChange;
+        if (r != null) r.run();
+    }
+
+    /** 日志目录变更时触发回调。 */
+    public static void setOnLogDirChange(Runnable listener) {
+        onLogDirChange = listener;
+    }
+
+    // ── 日志保留天数 ──
+
+    private static final String PREF_KEY_LOG_RETENTION_DAYS = "log.retention.days";
+
+    /** 日志保留天数默认值：30 天。 */
+    public static final int LOG_RETENTION_DAYS_DEFAULT = 30;
+
+    /** 获取日志保留天数（<=0 表示不自动清理）。 */
+    public static int getLogRetentionDays() {
+        try {
+            return Preferences.userNodeForPackage(AppConstants.class)
+                    .getInt(PREF_KEY_LOG_RETENTION_DAYS, LOG_RETENTION_DAYS_DEFAULT);
+        } catch (Exception e) {
+            return LOG_RETENTION_DAYS_DEFAULT;
+        }
+    }
+
+    /** 设置日志保留天数并持久化到 Preferences（<=0 表示不自动清理）。 */
+    public static void setLogRetentionDays(int days) {
+        try {
+            Preferences.userNodeForPackage(AppConstants.class)
+                    .putInt(PREF_KEY_LOG_RETENTION_DAYS, days);
+        } catch (Exception ignored) { }
+    }
+
+    // ── 界面语言 ──
+
+    private static final String PREF_KEY_LANGUAGE = "ui.language";
+
+    /** 获取界面语言（"zh" 简体中文 / "en" English，默认 "zh"）。 */
+    public static String getLanguage() {
+        try {
+            String saved = Preferences.userNodeForPackage(AppConstants.class)
+                    .get(PREF_KEY_LANGUAGE, "zh");
+            return "en".equals(saved) ? "en" : "zh";
+        } catch (Exception e) {
+            return "zh";
+        }
+    }
+
+    /** 设置界面语言并持久化（"zh" / "en"，其他值按 "zh" 处理）。 */
+    public static void setLanguage(String lang) {
+        String value = "en".equals(lang) ? "en" : "zh";
+        try {
+            Preferences.userNodeForPackage(AppConstants.class)
+                    .put(PREF_KEY_LANGUAGE, value);
+        } catch (Exception ignored) { }
     }
 
     // ── 开机自启 ──

@@ -1,5 +1,7 @@
 package com.island.weather;
 
+import com.island.util.AppLogger;
+
 import java.awt.Font;
 import java.awt.FontFormatException;
 import java.io.IOException;
@@ -44,7 +46,7 @@ public class WeatherIconMapper {
         if (loaded) return iconFont;
         try (InputStream is = WeatherIconMapper.class.getResourceAsStream("/fonts/qweather-icons.ttf")) {
             if (is == null) {
-                System.err.println("[WeatherIcon] 找不到字体文件 /fonts/qweather-icons.ttf");
+                AppLogger.warn("WeatherIcon", "找不到图标字体 /fonts/qweather-icons.ttf");
                 loaded = true;
                 return null;
             }
@@ -52,7 +54,7 @@ public class WeatherIconMapper {
             loaded = true;
             System.out.println("[WeatherIcon] QWeather 图标字体加载成功");
         } catch (FontFormatException | IOException e) {
-            System.err.println("[WeatherIcon] 字体加载失败: " + e.getMessage());
+            AppLogger.warn("WeatherIcon", "字体加载失败: " + e.getMessage());
             loaded = true;
         }
         return iconFont;

@@ -1,5 +1,7 @@
 package com.island.weather;
 
+import com.island.util.AppLogger;
+
 /**
  * 混合天气服务：聚合数据优先 + Open-Meteo CMA GRAPES 兜底。
  */
@@ -33,7 +35,7 @@ public class HybridWeatherService {
 
             @Override
             public void onWeatherError(String error) {
-                System.out.println("[天气] 聚合数据失败: " + error + "，降级到 Open-Meteo");
+                AppLogger.warn("Weather", "聚合数据失败: " + error + "，降级到 Open-Meteo");
                 openMeteo.setListener(new OpenMeteoWeatherService.WeatherListener() {
                     @Override
                     public void onWeatherUpdated(WeatherInfo weather) {
@@ -43,7 +45,7 @@ public class HybridWeatherService {
 
                     @Override
                     public void onWeatherError(String err) {
-                        System.err.println("[天气] 所有源均失败: " + err);
+                        AppLogger.error("Weather", "所有天气源均失败: " + err);
                         if (listener != null) listener.onWeatherError(err);
                     }
                 });

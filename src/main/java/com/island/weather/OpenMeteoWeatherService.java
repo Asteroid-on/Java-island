@@ -1,6 +1,7 @@
 package com.island.weather;
 
 import com.island.util.CityCoordinateTable;
+import com.island.util.AppLogger;
 import com.island.util.WindowsLocationProvider;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -123,7 +124,7 @@ public class OpenMeteoWeatherService {
             return new Location(result.latitude, result.longitude, placeName);
         }
 
-        System.err.println("[定位] Windows定位失败，使用默认位置：" + CityCoordinateTable.DEFAULT_CITY);
+        AppLogger.warn("Weather", "Windows 定位失败，使用默认位置：" + CityCoordinateTable.DEFAULT_CITY);
         return new Location(CityCoordinateTable.DEFAULT_LAT, CityCoordinateTable.DEFAULT_LON, CityCoordinateTable.DEFAULT_CITY);
     }
 
@@ -174,7 +175,7 @@ public class OpenMeteoWeatherService {
                 }
             }
         } catch (Exception e) {
-            System.err.println("[逆地理编码] BigDataCloud 失败: " + e.getMessage());
+            AppLogger.warn("Weather", "反向地理编码失败: " + e.getMessage());
         }
         return null;
     }
@@ -293,7 +294,7 @@ public class OpenMeteoWeatherService {
     }
 
     private void handleError(String error) {
-        System.err.println("[OpenMeteo Weather Service] " + error);
+        AppLogger.warn("Weather", "Open-Meteo: " + error);
         if (listener != null) {
             listener.onWeatherError(error);
         }

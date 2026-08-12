@@ -2,6 +2,7 @@ package com.island.music;
 
 import com.island.config.AppConstants;
 import com.island.music.model.LyricItem;
+import com.island.util.AppLogger;
 
 import java.io.BufferedReader;
 import java.io.StringReader;
@@ -68,7 +69,7 @@ public final class LyricsService {
             cache.putLyrics(sourceAppId, title, artist, lines);
             System.out.println("[Lyrics] ✅ " + lines.size() + "行");
         } else {
-            System.out.println("[Lyrics] ❌ 所有来源均失败");
+            AppLogger.warn("Lyrics", "歌词获取失败（所有来源）: " + title + " - " + artist);
         }
         return lines;
     }
@@ -108,7 +109,10 @@ public final class LyricsService {
             art = art.replace("100x100bb", "1200x1200bb");
             cache.putCoverUrl(sourceAppId, title, artist, art);
             return art;
-        } catch (Exception e) { return ""; }
+        } catch (Exception e) {
+            AppLogger.warn("Lyrics", "iTunes 封面查询失败: " + e.getMessage());
+            return "";
+        }
     }
 
     // ═══════════════════════════════════════════

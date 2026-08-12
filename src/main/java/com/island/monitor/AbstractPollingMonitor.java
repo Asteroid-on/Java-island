@@ -1,5 +1,7 @@
 package com.island.monitor;
 
+import com.island.util.AppLogger;
+
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -126,7 +128,7 @@ public abstract class AbstractPollingMonitor {
             // 调度器被 shutdownNow() 中断，正常情况，不记录日志
             Thread.currentThread().interrupt();
         } catch (Exception e) {
-            debug("poll 异常: " + e.getMessage());
+            AppLogger.warn(getName(), "轮询异常: " + e.getMessage());
         }
     }
 
@@ -143,7 +145,7 @@ public abstract class AbstractPollingMonitor {
      * 错误日志（总是输出到 stderr）。
      */
     protected void logError(String msg) {
-        System.err.println("[" + name + "] " + msg);
+        AppLogger.error(getName(), msg);
     }
 
     /**

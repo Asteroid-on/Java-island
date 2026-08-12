@@ -1,6 +1,7 @@
 package com.island.music;
 
 import com.island.music.model.MusicInfo;
+import com.island.util.AppLogger;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -67,17 +68,17 @@ public final class WindowsMediaManager {
                     try { Thread.sleep(RETRY_DELAY_MS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
                     continue;
                 }
-                System.err.println("[MusicManager] JSON 解析失败: " + e.getMessage());
+                AppLogger.warn("MusicManager", "JSON 解析失败: " + e.getMessage());
                 return MusicInfo.EMPTY;
             } catch (IOException e) {
                 if (attempt < MAX_RETRIES - 1) {
                     try { Thread.sleep(RETRY_DELAY_MS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
                     continue;
                 }
-                System.err.println("[MusicManager] 读取文件失败: " + e.getMessage());
+                AppLogger.warn("MusicManager", "媒体信息读取失败: " + e.getMessage());
                 return MusicInfo.EMPTY;
             } catch (Exception e) {
-                System.err.println("[MusicManager] 未预期异常: " + e.getMessage());
+                AppLogger.warn("MusicManager", "未预期异常: " + e.getMessage());
                 return MusicInfo.EMPTY;
             }
         }
