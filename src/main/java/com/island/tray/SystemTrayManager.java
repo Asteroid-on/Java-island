@@ -27,6 +27,8 @@ public class SystemTrayManager {
     private final DynamicIslandService service;
     private MouseInfoMonitor mouseMonitor; // 鼠标监听器
     private JDialog popupDialog;          // 菜单的 JDialog 容器
+    private AWTEventListener globalClickListener; // 全局鼠标监听：点击菜单外部时自动关闭菜单
+    private SettingsDialog settingsDialog; // 设置窗口唯一实例（单例激活语义）
 
     /** 菜单字体（黑体，13pt） */
     private static final Font MENU_FONT = new Font("SimHei", Font.PLAIN, 13);
@@ -37,6 +39,7 @@ public class SystemTrayManager {
         setupSystemTray();
         setupStateListener();
         setupMouseMonitor();
+        registerGlobalClickListener();
     }
 
     private void setupSystemTray() {
@@ -83,6 +86,9 @@ public class SystemTrayManager {
         popupDialog.setUndecorated(true);
         popupDialog.setAlwaysOnTop(true);
         popupDialog.setModal(false);
+        // 设置窗口是模态对话框：托盘菜单必须豁免应用级模态阻塞，
+        // 否则设置窗口打开期间菜单无法获得焦点、点击外部不会触发 windowLostFocus 导致菜单残留
+        popupDialog.setModalExclusionType(Dialog.ModalExclusionType.APPLICATION_EXCLUDE);
         popupDialog.setFocusableWindowState(true);
         popupDialog.setType(Window.Type.POPUP);
 
@@ -126,11 +132,7 @@ public class SystemTrayManager {
             @Override
             public void mouseClicked(MouseEvent e) {
                 hidePopup();
-                SwingUtilities.invokeLater(() -> {
-                    SettingsDialog dialog = new SettingsDialog(null,
-                            () -> islandWindow.getLyricsService().reinitCache());
-                    dialog.setVisible(true);
-                });
+                SwingUtilities.invokeLater(SystemTrayManager.this::showOrActivateSettings);
             }
         });
         panel.add(settingsItem);
@@ -174,25 +176,125 @@ public class SystemTrayManager {
         // 透明背景让窗口四周不可见，内层面板抗锯齿圆角渲染呈现在透明基底上
         popupDialog.setBackground(new Color(0, 0, 0, 0));
 
-        // 定位：鼠标右上方，边界检测防止溢出
+        // 定位：鼠标附近（优先右上方），基于鼠标所在屏幕的可视区域做边界修正，避免溢出屏幕
         Point mousePoint = MouseInfo.getPointerInfo().getLocation();
-        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        int menuW = panel.getPreferredSize().width;
-        int menuH = panel.getPreferredSize().height;
+        Dimension dlgSize = popupDialog.getSize(); // pack 后含外圈透明边的实际尺寸
+        Rectangle usable = getUsableScreenBounds(mousePoint);
+
         int x = mousePoint.x + 5;
-        int y = mousePoint.y - menuH - 5;
-        if (x + menuW > screenSize.width)  x = mousePoint.x - menuW - 5;
-        if (y < 0) y = mousePoint.y + 5;
-        if (y + menuH > screenSize.height) y = screenSize.height - menuH;
+        if (x + dlgSize.width > usable.x + usable.width) x = mousePoint.x - dlgSize.width - 5;
+        int y = mousePoint.y - dlgSize.height - 5;
+        if (y < usable.y) y = mousePoint.y + 5;
+        x = Math.max(usable.x, Math.min(x, usable.x + usable.width - dlgSize.width));
+        y = Math.max(usable.y, Math.min(y, usable.y + usable.height - dlgSize.height));
         popupDialog.setLocation(x, y);
 
         popupDialog.addWindowFocusListener(new WindowAdapter() {
-            public void windowLostFocus(WindowEvent e) { hidePopup(); }
+            @Override
+            public void windowLostFocus(WindowEvent e) {
+                // 仅关闭托盘菜单本身，不影响已打开的设置窗口等其他窗口；
+                // 延迟到事件分发结束再销毁，避免在焦点事件回调中 dispose 引发重入
+                JDialog lostDialog = popupDialog;
+                SwingUtilities.invokeLater(() -> {
+                    // 校验实例：若延迟期间用户已重新打开新菜单，则不误关新菜单
+                    if (popupDialog == lostDialog) {
+                        hidePopup();
+                    }
+                });
+            }
         });
 
         popupDialog.setVisible(true);
         popupDialog.toFront();
         popupDialog.requestFocus();
+    }
+
+    /**
+     * 获取屏幕点所在屏幕的可视区域（扣除任务栏等屏幕内边距）。
+     */
+    private Rectangle getUsableScreenBounds(Point screenPoint) {
+        GraphicsDevice[] devices =
+                GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
+        for (GraphicsDevice device : devices) {
+            GraphicsConfiguration gc = device.getDefaultConfiguration();
+            Rectangle bounds = gc.getBounds();
+            if (bounds.contains(screenPoint)) {
+                Insets insets = Toolkit.getDefaultToolkit().getScreenInsets(gc);
+                return new Rectangle(
+                        bounds.x + insets.left,
+                        bounds.y + insets.top,
+                        bounds.width - insets.left - insets.right,
+                        bounds.height - insets.top - insets.bottom);
+            }
+        }
+        // 兜底：鼠标不在任何屏幕内时使用主屏工作区
+        return GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+    }
+
+    /**
+     * 注册全局鼠标监听：菜单显示期间，点击菜单外部即关闭菜单（仅关闭菜单本身）。
+     * 与 windowLostFocus 互补，保证模态设置窗口打开时菜单也能正常自动关闭。
+     */
+    private void registerGlobalClickListener() {
+        globalClickListener = event -> {
+            if (popupDialog == null || !popupDialog.isShowing()) return;
+            if (event instanceof MouseEvent me && me.getID() == MouseEvent.MOUSE_PRESSED) {
+                Window clickedWindow = SwingUtilities.getWindowAncestor(me.getComponent());
+                if (clickedWindow != popupDialog) {
+                    hidePopup();
+                }
+            }
+        };
+        Toolkit.getDefaultToolkit().addAWTEventListener(
+                globalClickListener, AWTEvent.MOUSE_EVENT_MASK);
+    }
+
+    /**
+     * 打开设置窗口（单例激活语义，仅在 EDT 中调用）：
+     * - 实例已存在且未销毁：置前并请求焦点；
+     * - 实例不存在：创建并显示新窗口；窗口关闭（dispose）后清理引用，下次点击重新创建。
+     */
+    private void showOrActivateSettings() {
+        // 引用失效校验：窗口被 dispose 后不再 displayable
+        if (settingsDialog != null && !settingsDialog.isDisplayable()) {
+            settingsDialog = null;
+        }
+        if (settingsDialog == null) {
+            // 兜底：从应用现有窗口中找回已打开的设置窗口，避免重复创建
+            for (Window w : Window.getWindows()) {
+                if (w instanceof SettingsDialog d && d.isDisplayable()) {
+                    settingsDialog = d;
+                    break;
+                }
+            }
+        }
+        if (settingsDialog == null) {
+            SettingsDialog dialog = new SettingsDialog(null,
+                    () -> islandWindow.getLyricsService().reinitCache());
+            dialog.addWindowListener(new WindowAdapter() {
+                @Override
+                public void windowClosed(WindowEvent e) {
+                    // 关闭后清理引用，保证下次点击能正确重新创建
+                    if (settingsDialog == dialog) {
+                        settingsDialog = null;
+                    }
+                }
+            });
+            settingsDialog = dialog;
+        }
+
+        SettingsDialog dialog = settingsDialog;
+        if (dialog.isVisible()) {
+            // 已存在并可见：置前并请求焦点即可
+            // （设置窗口为 JDialog，标题栏无最小化按钮，无需恢复最小化状态）
+            dialog.toFront();
+            dialog.requestFocus();
+        } else {
+            // 新创建或隐藏的窗口：直接显示（新窗口自动置前并获得激活）；
+            // 模态窗口的 setVisible(true) 会阻塞当前 EDT 事件直至窗口关闭，
+            // 因此置前操作只能在“已可见”分支中执行，避免在已销毁的窗口上操作
+            dialog.setVisible(true);
+        }
     }
 
     // ── 菜单项组件（自定义绘制，支持图标） ──
@@ -545,6 +647,12 @@ public class SystemTrayManager {
     public void dispose() {
         // 关闭弹出菜单
         hidePopup();
+
+        // 注销全局鼠标监听
+        if (globalClickListener != null) {
+            Toolkit.getDefaultToolkit().removeAWTEventListener(globalClickListener);
+            globalClickListener = null;
+        }
 
         // 隐藏并销毁岛屿窗口
         if (islandWindow != null) {

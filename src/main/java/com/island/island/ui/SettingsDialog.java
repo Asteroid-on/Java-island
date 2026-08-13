@@ -78,6 +78,8 @@ public class SettingsDialog extends JDialog {
     public SettingsDialog(Frame owner, Runnable onCacheDirChanged) {
         super(owner, "设置", true);
         this.onCacheDirChanged = onCacheDirChanged;
+        // 关闭即销毁：配合托盘菜单的单例激活语义，关闭后下次点击重新创建
+        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         buildUI();
         setSize(800, 620);
         setLocationRelativeTo(owner);
@@ -239,6 +241,25 @@ public class SettingsDialog extends JDialog {
         });
 
         p.add(sectionCard("语言", new Component[]{ fieldRow("界面语言", langCb) }));
+
+        JCheckBox autoCollapseCb = new JCheckBox("扩展岛空闲 10 分钟后自动收起");
+        autoCollapseCb.setFont(F_BODY);
+        autoCollapseCb.setForeground(C_TEXT);
+        autoCollapseCb.setBackground(C_CARD);
+        autoCollapseCb.setFocusPainted(false);
+        autoCollapseCb.setBorder(new EmptyBorder(2, 0, 2, 0));
+        autoCollapseCb.setSelected(AppConstants.isAutoCollapseExpandedEnabled());
+        autoCollapseCb.addActionListener(e ->
+                AppConstants.setAutoCollapseExpandedEnabled(autoCollapseCb.isSelected()));
+
+        JLabel autoCollapseTip = new JLabel("仅主动点击展开时生效；显示歌词或摄像头/麦克风监测指示期间不会自动收起。");
+        autoCollapseTip.setFont(F_SMALL);
+        autoCollapseTip.setForeground(C_MUTED);
+
+        p.add(Box.createVerticalStrut(12));
+        p.add(sectionCard("扩展岛", new Component[]{
+                autoCollapseCb, Box.createVerticalStrut(4), autoCollapseTip
+        }));
         return p;
     }
 

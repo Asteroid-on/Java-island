@@ -25,7 +25,7 @@ public final class AppConstants {
     public static final int SINGLE_INSTANCE_PORT = 9127;
 
     /** 触发距离：鼠标距离上边框50px时触发 */
-    public static final int TRIGGER_DISTANCE = 50;
+    public static final int TRIGGER_DISTANCE = 8;
 
     /** 隐藏检测间隔：100ms */
     public static final int HIDE_CHECK_INTERVAL = 100;
@@ -220,6 +220,28 @@ public final class AppConstants {
         try {
             Preferences.userNodeForPackage(AppConstants.class)
                     .putBoolean(PREF_KEY_MINIMIZE_TO_TRAY, enabled);
+        } catch (Exception ignored) { }
+    }
+
+    // ── 扩展岛空闲自动收起 ──
+
+    private static final String PREF_KEY_AUTO_COLLAPSE_EXPANDED = "island.autoCollapseExpanded";
+
+    /** 获取"扩展岛空闲 10 分钟后自动收起"开关状态（默认关闭）。 */
+    public static boolean isAutoCollapseExpandedEnabled() {
+        try {
+            return Preferences.userNodeForPackage(AppConstants.class)
+                    .getBoolean(PREF_KEY_AUTO_COLLAPSE_EXPANDED, false);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 设置"扩展岛空闲 10 分钟后自动收起"开关状态。 */
+    public static void setAutoCollapseExpandedEnabled(boolean enabled) {
+        try {
+            Preferences.userNodeForPackage(AppConstants.class)
+                    .putBoolean(PREF_KEY_AUTO_COLLAPSE_EXPANDED, enabled);
         } catch (Exception ignored) { }
     }
 

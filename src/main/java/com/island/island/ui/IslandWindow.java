@@ -15,6 +15,8 @@ import com.island.util.AppLogger;
 
 import com.island.wifi.WifiMonitor;
 import com.island.battery.BatteryMonitor;
+import com.island.config.AppConstants;
+import com.island.privacy.PrivacyMonitor;
 import com.island.weather.HybridWeatherService;
 import com.island.weather.WeatherIconMapper;
 import com.island.weather.WeatherInfo;
@@ -94,6 +96,10 @@ public class IslandWindow extends JWindow implements Serializable {
     private static final int EXPAND_ANIM_FRAME_MS = 10;
     private static final int SLIDE_ANIM_DURATION_MS = 400;
     private static final int SLIDE_ANIM_FRAME_MS = 11; // 约 90 FPS（1000/11 ≈ 90.9）
+    /** 直接隐藏阶段1（两边向中间收缩成小球）时长 */
+    private static final int SLIDE_UP_SHRINK_MS = 400;
+    /** 直接隐藏阶段2（小球向上滑出屏幕）时长：快速滑出，无需看清 */
+    private static final int SLIDE_UP_RISE_MS = 100;
 
     // ── 音乐面板 ──
     private static final int COVER_SIZE = 48;
@@ -157,6 +163,55 @@ public class IslandWindow extends JWindow implements Serializable {
     private JPanel batteryPanel;
     private volatile BatteryMonitor.BatteryInfo currentBatteryInfo = BatteryMonitor.BatteryInfo.ABSENT;
 
+    // ── 摄像头 / 麦克风使用状态 ──
+    private static final int USAGE_ICON_MS = 1500;
+    private static final int USAGE_MORPH_MS = 400;
+    private static final int USAGE_FADE_OUT_MS = 350;
+    private static final int USAGE_ANIM_FRAME_MS = 16;
+    /** 图标尺寸：定位在扩展岛右半圆圆心，放大 2 倍（14 → 28） */
+    private static final int USAGE_ICON_SIZE = 28;
+    private static final int USAGE_DOT_DIAMETER = 8;
+    private static final int USAGE_SLOT_GAP = 6;
+    private static final int USAGE_PANEL_PAD = 6;
+    /** 设备占用自动弹出扩展岛后保持显示的时长 */
+    private static final int DEVICE_AUTO_HIDE_MS = 5000;
+    /** 扩展岛空闲自动收起：仅用户主动展开时启动，连续空闲满此时长后自动收起 */
+    private static final int IDLE_AUTO_COLLAPSE_MS = 10 * 60 * 1000;
+    /** 空闲自动收起巡检间隔 */
+    private static final int IDLE_AUTO_COLLAPSE_CHECK_MS = 5000;
+
+    private transient PrivacyMonitor privacyMonitor;
+    private transient Image cameraInUseIcon;
+    private transient Image micInUseIcon;
+    private JPanel deviceUsagePanel;
+    private Timer deviceUsageAnimTimer;
+    /** 当前扩展岛是否由设备占用事件自动弹出（决定 5 秒自动隐藏是否生效） */
+    private boolean deviceAutoExpanded = false;
+    private Timer deviceAutoHideTimer;
+    /** 扩展岛空闲自动收起巡检定时器（仅用户主动展开时启动） */
+    private Timer idleAutoCollapseTimer;
+    /** 空闲计时起点：任一阻断条件（未勾选/歌词显示/设备监测指示）出现时重置 */
+    private long idleExpandSince = 0;
+    private final DeviceIndicator cameraIndicator = new DeviceIndicator();
+    private final DeviceIndicator micIndicator = new DeviceIndicator();
+    private volatile boolean cameraInUse = false;
+    private volatile boolean micInUse = false;
+    /** 面板级唯一绿点：进度 0~1（淡入/淡出插值），固定显示在右半圆圆心 */
+    private float dotProgress = 0f;
+    private boolean dotTargetVisible = false;
+    /** 绿点在状态面板内的 x 坐标（面板超窗左移后与圆心仍保持一致） */
+    private int usageDotCenterX = 20;
+
+    /** 单个设备状态指示器的动画阶段（仅负责图标展示，绿点由面板统一绘制） */
+    private enum UsagePhase { HIDDEN, ICON, MORPHING, FADING_OUT }
+
+    /** 单个设备状态指示器（摄像头或麦克风） */
+    private static final class DeviceIndicator {
+        UsagePhase phase = UsagePhase.HIDDEN;
+        long phaseStartMs;
+        Image icon;
+    }
+
     // ── 卡片切换 ──
     private float gestureSlideProgress = 0f;
     private Timer gestureSlideAnimTimer;
@@ -210,6 +265,16 @@ public class IslandWindow extends JWindow implements Serializable {
         monitor.setListener(info -> {
             SwingUtilities.invokeLater(() -> updateBatteryDisplay(info));
         });
+        monitor.start();
+    }
+
+    /** 注入摄像头/麦克风使用状态监控器，由 IslandApplication 调用 */
+    public void setPrivacyMonitor(PrivacyMonitor monitor) {
+        if (monitor == null) return;
+        this.privacyMonitor = monitor;
+        AppLogger.info("IslandWindow", "PrivacyMonitor 已注入，开始监听");
+        monitor.setListener((camera, mic) ->
+                SwingUtilities.invokeLater(() -> updateDeviceUsage(camera, mic)));
         monitor.start();
     }
 
@@ -929,6 +994,313 @@ public class IslandWindow extends JWindow implements Serializable {
         return pnl;
     }
 
+    // ═══════════════════════════════════════════
+    //  摄像头 / 麦克风使用状态 — 图标 → 绿点过渡
+    // ═══════════════════════════════════════════
+
+    /** 摄像头/麦克风使用状态回调（EDT） */
+    private void updateDeviceUsage(boolean camera, boolean mic) {
+        if (camera != cameraInUse || mic != micInUse) {
+            AppLogger.info("IslandWindow", "设备使用状态变化: camera=" + camera + ", mic=" + mic);
+        }
+        boolean wasAnyInUse = cameraInUse || micInUse;
+        cameraInUse = camera;
+        micInUse = mic;
+        boolean isAnyInUse = camera || mic;
+
+        // 设备从全部空闲变为首次占用：自动弹出扩展岛（先弹出、后显示图标）
+        boolean firstUsage = !wasAnyInUse && isAnyInUse;
+        if (firstUsage && !isExpandedIslandVisible() && !isExpanding && !isCollapsing) {
+            AppLogger.info("IslandWindow", "检测到设备首次占用，自动弹出扩展岛");
+            deviceAutoExpanded = true;
+            cancelDeviceAutoHideTimer();
+            showExpandedIsland();
+            // 图标状态延后到展开动画完成时应用，避免图标在展开中途出现
+            return;
+        }
+        applyUsageStates();
+    }
+
+    /** 将当前设备占用状态应用到指示器与绿点（EDT） */
+    private void applyUsageStates() {
+        applyDesiredState(cameraIndicator, cameraInUse);
+        applyDesiredState(micIndicator, micInUse);
+        updateDotTarget();
+        refreshUsagePanelVisibility();
+    }
+
+    /**
+     * 清理已结束的设备使用状态残留（仅当无设备占用时生效）：
+     * 指示器未完成的淡出阶段与未归零的绿点进度会在扩展岛隐藏时被冻结，
+     * 重新展开时会导致旧绿点/图标短暂闪现，需在此统一清零。
+     */
+    private void cleanupStaleUsageState() {
+        if (!cameraInUse && !micInUse) {
+            cameraIndicator.phase = UsagePhase.HIDDEN;
+            micIndicator.phase = UsagePhase.HIDDEN;
+            dotTargetVisible = false;
+            dotProgress = 0f;
+        }
+    }
+
+    /** 将指示器推向目标状态：占用→图标展示，释放→图标淡出消失 */
+    private void applyDesiredState(DeviceIndicator ind, boolean inUse) {
+        if (inUse) {
+            if (ind.phase == UsagePhase.HIDDEN || ind.phase == UsagePhase.FADING_OUT) {
+                ind.phase = UsagePhase.ICON;
+                ind.phaseStartMs = System.currentTimeMillis();
+            }
+        } else if (ind.phase != UsagePhase.HIDDEN && ind.phase != UsagePhase.FADING_OUT) {
+            if (ind.phase == UsagePhase.MORPHING) {
+                // 从交叉渐变中途续接淡出，避免图标透明度跳变
+                float e = (System.currentTimeMillis() - ind.phaseStartMs) / (float) USAGE_MORPH_MS;
+                ind.phaseStartMs = System.currentTimeMillis() - (long) (e * USAGE_FADE_OUT_MS);
+            } else {
+                ind.phaseStartMs = System.currentTimeMillis();
+            }
+            ind.phase = UsagePhase.FADING_OUT;
+        }
+    }
+
+    /**
+     * 更新面板级绿点目标可见性：
+     * 只要有设备占用、且所有占用设备的图标展示均已结束，就显示唯一绿点。
+     */
+    private void updateDotTarget() {
+        boolean anyActive = cameraInUse || micInUse;
+        boolean iconShowing = (cameraInUse && cameraIndicator.phase == UsagePhase.ICON)
+                || (micInUse && micIndicator.phase == UsagePhase.ICON);
+        dotTargetVisible = anyActive && !iconShowing;
+    }
+
+    /** 推进面板级绿点的淡入/淡出进度（线性插值） */
+    private void advanceDotAnimation() {
+        if (dotTargetVisible) {
+            dotProgress = Math.min(1f, dotProgress + USAGE_ANIM_FRAME_MS / (float) USAGE_MORPH_MS);
+        } else {
+            dotProgress = Math.max(0f, dotProgress - USAGE_ANIM_FRAME_MS / (float) USAGE_FADE_OUT_MS);
+        }
+    }
+
+    /** 根据指示器状态同步状态面板可见性与动画定时器 */
+    private void refreshUsagePanelVisibility() {
+        if (deviceUsagePanel == null) return;
+        boolean anyVisible = cameraIndicator.phase != UsagePhase.HIDDEN
+                || micIndicator.phase != UsagePhase.HIDDEN
+                || dotProgress > 0f;
+        boolean wasVisible = deviceUsagePanel.isVisible();
+        if (anyVisible != wasVisible) {
+            deviceUsagePanel.setVisible(anyVisible);
+        }
+        startOrStopUsageAnimTimer();
+        if (anyVisible != wasVisible && isExpandedIslandVisible()) {
+            layoutExpandedPanel();
+        }
+    }
+
+    private void startOrStopUsageAnimTimer() {
+        boolean needed = deviceUsagePanel != null
+                && deviceUsagePanel.isVisible()
+                && (cameraIndicator.phase != UsagePhase.HIDDEN
+                    || micIndicator.phase != UsagePhase.HIDDEN
+                    || dotProgress > 0f && (dotTargetVisible ? dotProgress < 1f : true));
+        if (needed) {
+            if (deviceUsageAnimTimer == null || !deviceUsageAnimTimer.isRunning()) {
+                if (deviceUsageAnimTimer != null) deviceUsageAnimTimer.stop();
+                deviceUsageAnimTimer = new Timer(USAGE_ANIM_FRAME_MS, e -> tickUsageAnim());
+                deviceUsageAnimTimer.start();
+            }
+        } else {
+            stopUsageAnimTimer();
+        }
+    }
+
+    private void stopUsageAnimTimer() {
+        if (deviceUsageAnimTimer != null) {
+            deviceUsageAnimTimer.stop();
+            deviceUsageAnimTimer = null;
+        }
+    }
+
+    /** 设备占用自动弹出后，5 秒自动隐藏扩展岛 */
+    private void startDeviceAutoHideTimer() {
+        if (deviceAutoHideTimer != null) deviceAutoHideTimer.stop();
+        deviceAutoHideTimer = new Timer(DEVICE_AUTO_HIDE_MS, e -> {
+            deviceAutoHideTimer = null;
+            deviceAutoExpanded = false;
+            if (isExpandedIslandVisible()) {
+                AppLogger.info("IslandWindow", "设备占用自动弹出超时，自动隐藏扩展岛");
+                hideExpandedIslandSlideUp();
+            }
+        });
+        deviceAutoHideTimer.setRepeats(false);
+        deviceAutoHideTimer.start();
+    }
+
+    private void cancelDeviceAutoHideTimer() {
+        if (deviceAutoHideTimer != null) {
+            deviceAutoHideTimer.stop();
+            deviceAutoHideTimer = null;
+        }
+    }
+
+    /** 动画帧：推进阶段状态机并重绘状态面板 */
+    private void tickUsageAnim() {
+        long now = System.currentTimeMillis();
+        boolean sizeMayChange = advanceIndicator(cameraIndicator, now);
+        sizeMayChange |= advanceIndicator(micIndicator, now);
+        updateDotTarget();
+        float dotBefore = dotProgress;
+        advanceDotAnimation();
+        // 绿点淡入完成或淡出结束时刷新可见性/定时器（淡出完成需隐藏面板）
+        boolean dotReachedEnd = (dotBefore > 0f && dotProgress == 0f)
+                || (dotBefore < 1f && dotProgress == 1f);
+        if (deviceUsagePanel != null && deviceUsagePanel.isVisible()) {
+            deviceUsagePanel.repaint();
+        }
+        if (sizeMayChange || dotReachedEnd) {
+            refreshUsagePanelVisibility();
+            if (isExpandedIslandVisible()) {
+                layoutExpandedPanel();
+            }
+        }
+    }
+
+    /** 推进单个指示器的阶段状态机，返回布局尺寸是否可能变化 */
+    private boolean advanceIndicator(DeviceIndicator ind, long now) {
+        long elapsed = now - ind.phaseStartMs;
+        switch (ind.phase) {
+            case ICON:
+                if (elapsed >= USAGE_ICON_MS) {
+                    ind.phase = UsagePhase.MORPHING;
+                    ind.phaseStartMs = now;
+                    return true;
+                }
+                return false;
+            case MORPHING:
+                if (elapsed >= USAGE_MORPH_MS) {
+                    ind.phase = UsagePhase.HIDDEN;
+                    return true;
+                }
+                return false;
+            case FADING_OUT:
+                if (elapsed >= USAGE_FADE_OUT_MS) {
+                    ind.phase = UsagePhase.HIDDEN;
+                    return true;
+                }
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    /** 构建摄像头/麦克风使用状态面板（扩展岛最右侧） */
+    private JPanel buildDeviceUsagePanel() {
+        JPanel pnl = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                Graphics2D g2d = (Graphics2D) g.create();
+                try {
+                    g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                    int cy = getHeight() / 2;
+
+                    // 唯一绿色圆点：固定在右半圆圆心（面板内坐标 usageDotCenterX）
+                    if (dotProgress > 0f) {
+                        float e = easeInOutCubic(Math.min(dotProgress, 1f));
+                        int dot = Math.max(1, Math.round(USAGE_DOT_DIAMETER * (0.5f + 0.5f * e)));
+                        g2d.setColor(new Color(GREEN.getRed(), GREEN.getGreen(), GREEN.getBlue(), (int) (255 * e)));
+                        g2d.fillOval(usageDotCenterX - dot / 2, cy - dot / 2, dot, dot);
+                    }
+
+                    // 图标并排显示（高度对齐），整体对称于圆心
+                    boolean camIcon = cameraIndicator.phase != UsagePhase.HIDDEN;
+                    boolean micIcon = micIndicator.phase != UsagePhase.HIDDEN;
+                    int count = (camIcon ? 1 : 0) + (micIcon ? 1 : 0);
+                    if (count > 0) {
+                        int totalW = count * USAGE_ICON_SIZE + (count - 1) * USAGE_SLOT_GAP;
+                        int x = (getWidth() - totalW) / 2;
+                        if (camIcon) {
+                            paintIndicator(g2d, cameraIndicator, x, cy);
+                            x += USAGE_ICON_SIZE + USAGE_SLOT_GAP;
+                        }
+                        if (micIcon) {
+                            paintIndicator(g2d, micIndicator, x, cy);
+                        }
+                    }
+                } finally {
+                    g2d.dispose();
+                }
+            }
+
+            @Override
+            public Dimension getPreferredSize() {
+                int count = 0;
+                if (cameraIndicator.phase != UsagePhase.HIDDEN) count++;
+                if (micIndicator.phase != UsagePhase.HIDDEN) count++;
+                int iconsW = count * USAGE_ICON_SIZE + Math.max(0, count - 1) * USAGE_SLOT_GAP;
+                // 无图标时保留绿点尺寸，保持面板中心稳定在圆心
+                int w = USAGE_PANEL_PAD * 2 + Math.max(iconsW, USAGE_ICON_SIZE);
+                return new Dimension(w, EXPANDED_HEIGHT - 8);
+            }
+        };
+        pnl.setOpaque(false);
+        boolean anyVisible = cameraIndicator.phase != UsagePhase.HIDDEN
+                || micIndicator.phase != UsagePhase.HIDDEN
+                || dotProgress > 0f;
+        pnl.setVisible(anyVisible);
+        deviceUsagePanel = pnl;
+        return pnl;
+    }
+
+    /**
+     * 绘制单个状态项图标：
+     * ICON 阶段弹入显示；MORPHING 阶段淡出缩小（绿点同步由面板绘制）；
+     * FADING_OUT 阶段图标淡出消失。
+     */
+    private void paintIndicator(Graphics2D g2d, DeviceIndicator ind, int x, int cy) {
+        long elapsed = System.currentTimeMillis() - ind.phaseStartMs;
+        float iconAlpha;
+        float iconScale;
+        switch (ind.phase) {
+            case ICON: {
+                float pop = Math.min(elapsed / 160f, 1f);
+                iconAlpha = 1f;
+                iconScale = 0.7f + 0.3f * pop;
+                break;
+            }
+            case MORPHING: {
+                float p = Math.min(elapsed / (float) USAGE_MORPH_MS, 1f);
+                float e = easeInOutCubic(p);
+                iconAlpha = 1f - e;
+                iconScale = 1f - 0.4f * e;
+                break;
+            }
+            case FADING_OUT: {
+                float p = Math.min(elapsed / (float) USAGE_FADE_OUT_MS, 1f);
+                float e = easeInOutCubic(p);
+                iconAlpha = 1f - e;
+                iconScale = 1f - 0.4f * e;
+                break;
+            }
+            default:
+                return;
+        }
+
+        int cx = x + USAGE_ICON_SIZE / 2;
+        if (iconAlpha > 0f && ind.icon != null) {
+            int size = Math.max(1, Math.round(USAGE_ICON_SIZE * iconScale));
+            g2d.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, iconAlpha));
+            g2d.drawImage(ind.icon, cx - size / 2, cy - size / 2, size, size, null);
+            g2d.setComposite(AlphaComposite.SrcOver);
+        }
+    }
+
+    private float easeInOutCubic(float x) {
+        return x < 0.5f ? 4f * x * x * x : 1f - (float) Math.pow(-2f * x + 2f, 3) / 2f;
+    }
+
     /** 滚轮向下触发：在扩展岛中显示占位面板或音乐面板 */
     private void showMusicPanelInExpandedIsland() {
         if (expandedWindow == null || !expandedWindow.isVisible()) return;
@@ -1025,10 +1397,25 @@ public class IslandWindow extends JWindow implements Serializable {
             } else if (c == placeholderPanel && placeholderPanel != null) {
                 placeholderPanel.setBounds(ins.left + iw - offset, ins.top, iw, ih);
                 placeholderPanel.revalidate();
+            } else if (c == deviceUsagePanel && deviceUsagePanel != null) {
+                // 保持使用状态面板位于最顶层，避免被滑入的音乐面板遮挡
+                rp.setComponentZOrder(deviceUsagePanel, 0);
+                Dimension pref = deviceUsagePanel.getPreferredSize();
+                // 面板中心对齐右半圆圆心；若超窗则整体左移保证完整可见
+                int centerX = pw - EXPANDED_HEIGHT / 2;
+                int x = centerX - pref.width / 2;
+                if (x + pref.width > pw - ins.right) {
+                    x = pw - ins.right - pref.width;
+                }
+                usageDotCenterX = centerX - x;
+                deviceUsagePanel.setBounds(x, (ph - pref.height) / 2, pref.width, pref.height);
             } else if (c == musicPanel && musicPanel != null) {
                 int coverCenterX = EXPANDED_HEIGHT / 2 + 4;
                 int musicX = coverCenterX - COVER_SIZE / 2;
-                int musicW = pw - ins.right - musicX;
+                // 为右侧使用状态面板预留空间，避免内容重叠
+                int reserved = (deviceUsagePanel != null && deviceUsagePanel.isVisible())
+                        ? deviceUsagePanel.getPreferredSize().width + USAGE_SLOT_GAP : 0;
+                int musicW = pw - ins.right - musicX - reserved;
                 musicPanel.setBounds(musicX + iw - offset, ins.top, musicW, ih);
                 musicPanel.revalidate();
             }
@@ -1052,6 +1439,9 @@ public class IslandWindow extends JWindow implements Serializable {
         if (expandedWindow != null) {
             expandedWindow.dispose();
         }
+        // 记录本次展开是否由用户主动点击触发（设备占用自动弹出不参与空闲自动收起）
+        final boolean userInitiated = !deviceAutoExpanded;
+        stopIdleAutoCollapseTimer();
         isExpanding = true;
 
         // 重置卡片切换状态
@@ -1117,6 +1507,11 @@ public class IslandWindow extends JWindow implements Serializable {
         JPanel battPnl = buildBatteryPanel();
         panel.add(battPnl);
 
+        // 构建前清理已结束的设备使用状态残留，避免旧绿点/图标在新展开时闪现
+        cleanupStaleUsageState();
+        deviceUsagePanel = buildDeviceUsagePanel();
+        panel.add(deviceUsagePanel);
+
         expandedWindow.getContentPane().add(panel);
 
         // ── 滚轮监听：向下滚动 = 右滑（显示右侧卡片），向上滚动 = 左滑（返回左侧卡片）──
@@ -1166,6 +1561,15 @@ public class IslandWindow extends JWindow implements Serializable {
                 expandedWindow.setLocation(targetX, targetY);
                 isExpanding = false;
                 layoutExpandedPanel();
+                startOrStopUsageAnimTimer();
+                // 设备占用触发的自动弹出：展开完成后再显示图标，并启动 5 秒自动隐藏计时
+                if (deviceAutoExpanded) {
+                    applyUsageStates();
+                    startDeviceAutoHideTimer();
+                } else if (userInitiated) {
+                    // 用户主动展开：启动空闲自动收起巡检（勾选设置后生效）
+                    startIdleAutoCollapseTimer();
+                }
             }
         });
         expandTimer.setInitialDelay(0);
@@ -1176,10 +1580,25 @@ public class IslandWindow extends JWindow implements Serializable {
         return expandedWindow != null && expandedWindow.isVisible();
     }
 
+    /** 间接隐藏：扩展岛收缩回主岛（往返形态过渡，保持原有尺寸/位置插值动画） */
     private void hideExpandedIsland() {
+        hideExpandedIslandInternal(false);
+    }
+
+    /** 直接隐藏：扩展岛整体向上平移滑出屏幕顶部（自动隐藏场景，不做形态收缩） */
+    private void hideExpandedIslandSlideUp() {
+        hideExpandedIslandInternal(true);
+    }
+
+    private void hideExpandedIslandInternal(boolean slideUp) {
         if (expandedWindow == null || isCollapsing) {
             return;
         }
+
+        // 手动折叠（或自动隐藏执行）时取消 5 秒自动隐藏计时
+        cancelDeviceAutoHideTimer();
+        deviceAutoExpanded = false;
+        stopIdleAutoCollapseTimer();
 
         // 重置卡片切换状态
         gestureSlideProgress = 0f;
@@ -1192,6 +1611,7 @@ public class IslandWindow extends JWindow implements Serializable {
 
         stopCoverRotation();
         stopLyricScrollTimer();
+        stopUsageAnimTimer();
 
         for (java.awt.event.MouseListener ml : expandedWindow.getMouseListeners()) {
             expandedWindow.removeMouseListener(ml);
@@ -1199,6 +1619,19 @@ public class IslandWindow extends JWindow implements Serializable {
 
         for (java.awt.event.MouseWheelListener wl : expandedWindow.getMouseWheelListeners()) {
             expandedWindow.removeMouseWheelListener(wl);
+        }
+
+        // 直接隐藏：先隐藏扩展岛内部 UI 内容，避免收缩成小球过程中内容溢出或残影
+        if (slideUp) {
+            Container cp = expandedWindow.getContentPane();
+            if (cp.getComponentCount() > 0) {
+                Component root = cp.getComponent(0);
+                if (root instanceof JPanel) {
+                    for (Component c : ((JPanel) root).getComponents()) {
+                        c.setVisible(false);
+                    }
+                }
+            }
         }
 
         Point startLoc = expandedWindow.getLocation();
@@ -1212,25 +1645,67 @@ public class IslandWindow extends JWindow implements Serializable {
 
         Timer collapseTimer = new Timer(EXPAND_ANIM_FRAME_MS, null);
         final long animStart = System.currentTimeMillis();
+        final int[] slideUpPhase = {0};
+        final long[] slideUpPhaseStart = {animStart};
+        final boolean[] windowHidden = {false};
         collapseTimer.addActionListener(e -> {
             float elapsed = System.currentTimeMillis() - animStart;
             float progress = Math.min(elapsed / EXPAND_ANIM_DURATION_MS, 1.0f);
-            double eased = AnimationUtil.easeInOutQuad(progress);
 
-            int curW = (int) (startW + (targetW - startW) * eased);
-            int curH = (int) (startH + (targetH - startH) * eased);
-            int curX = (int) (startLoc.x + (targetLoc.x - startLoc.x) * eased);
-            int curY = (int) (startLoc.y + (targetLoc.y - startLoc.y) * eased);
+            boolean animationDone;
+            if (slideUp) {
+                // 直接隐藏：先收缩成小球（保持中心点），再向上滑出屏幕顶部。
+                // 全程窗口可见，收缩与上滑过程清晰呈现（收尾时统一隐藏窗口）
+                long phaseElapsed = System.currentTimeMillis() - slideUpPhaseStart[0];
+                int phaseMs = slideUpPhase[0] == 0 ? SLIDE_UP_SHRINK_MS : SLIDE_UP_RISE_MS;
+                float phaseProgress = Math.min(phaseElapsed / (float) phaseMs, 1.0f);
+                double pe = AnimationUtil.easeInOutQuad(phaseProgress);
+                int ball = AppConstants.BALL_SIZE;
+                int centerX = startLoc.x + startW / 2;
+                int centerY = startLoc.y + startH / 2;
+                if (slideUpPhase[0] == 0) {
+                    // 阶段1：从两边向中间收缩成小球（保持中心点不变，全程可见）
+                    int newW = (int) (startW - (startW - ball) * pe);
+                    int newH = (int) (startH - (startH - ball) * pe);
+                    expandedWindow.setSize(newW, newH);
+                    expandedWindow.setLocation(centerX - newW / 2, centerY - newH / 2);
+                    if (phaseProgress >= 1.0f) {
+                        slideUpPhase[0] = 1;
+                        slideUpPhaseStart[0] = System.currentTimeMillis();
+                    }
+                    animationDone = false;
+                } else {
+                    // 阶段2：小球向上滑出屏幕顶部（可见滑出，自然消失）
+                    int startY = centerY - ball / 2;
+                    int targetY = -ball;
+                    int curY = (int) (startY + (targetY - startY) * pe);
+                    expandedWindow.setLocation(centerX - ball / 2, curY);
+                    animationDone = phaseProgress >= 1.0f;
+                }
+            } else {
+                // 间接隐藏：收缩回主岛位置，展开动画的严格对称反向镜像
+                // 二次加速缓动 progress²，与展开动画的二次减速缓动 1-(1-p)² 时间上完全对称；
+                // 窗口全程可见（与展开动画一致），仅动画完成收尾时统一隐藏
+                double eased = progress * progress;
+                int curW = (int) (startW + (targetW - startW) * eased);
+                int curH = (int) (startH + (targetH - startH) * eased);
+                int curX = (int) (startLoc.x + (targetLoc.x - startLoc.x) * eased);
+                int curY = (int) (startLoc.y + (targetLoc.y - startLoc.y) * eased);
+                expandedWindow.setSize(curW, curH);
+                expandedWindow.setLocation(curX, curY);
+                animationDone = progress >= 1.0f;
+            }
 
-            expandedWindow.setSize(curW, curH);
-            expandedWindow.setLocation(curX, curY);
-
-            if (progress >= 1.0f) {
+            if (animationDone) {
                 ((Timer) e.getSource()).stop();
-                expandedWindow.setVisible(false);
+                if (!windowHidden[0]) {
+                    expandedWindow.setVisible(false);
+                }
                 expandedWindow.dispose();
                 expandedWindow = null;
                 isCollapsing = false;
+                // 收尾统一清理已结束的设备使用状态残留（设备仍在占用时不受影响）
+                cleanupStaleUsageState();
 
                 // 重置音乐面板状态
                 musicPanelInitialized = false;
@@ -1240,13 +1715,21 @@ public class IslandWindow extends JWindow implements Serializable {
                 musicArtistLabel = null;
                 musicLyricsLabel = null;
                 placeholderPanel = null;
+                deviceUsagePanel = null;
 
                 SwingUtilities.invokeLater(() -> {
-                    service.show();
-                    service.onAnimationComplete();
-                    restoreTimeDisplay();
-                    setVisible(true);
-                    updateTextVisibility();
+                    if (slideUp) {
+                        // 直接隐藏：不强制恢复主岛，交由鼠标检测逻辑按需显示，
+                        // 避免主岛闪现后又被立即隐藏造成"重复隐藏动画"的闪烁
+                        service.onAnimationComplete();
+                        setVisible(false);
+                    } else {
+                        service.show();
+                        service.onAnimationComplete();
+                        restoreTimeDisplay();
+                        setVisible(true);
+                        updateTextVisibility();
+                    }
                 });
             }
         });
@@ -1724,13 +2207,68 @@ public class IslandWindow extends JWindow implements Serializable {
 
     private void scheduleDelayedHide() {
         if (hideDelayTimer != null) hideDelayTimer.stop();
-        hideDelayTimer = new Timer(1000, e -> { hideDelayTimer = null; if (isExpandedIslandVisible()) hideExpandedIsland(); });
+        hideDelayTimer = new Timer(1000, e -> { hideDelayTimer = null; if (isExpandedIslandVisible()) hideExpandedIslandSlideUp(); });
         hideDelayTimer.setRepeats(false);
         hideDelayTimer.start();
     }
 
     private void cancelDelayedHide() {
         if (hideDelayTimer != null) { hideDelayTimer.stop(); hideDelayTimer = null; }
+    }
+
+    // ═══════════════════════════════════════════
+    //  扩展岛空闲自动收起（仅用户主动展开时生效）
+    // ═══════════════════════════════════════════
+
+    /**
+     * 启动空闲自动收起巡检。每 5 秒检查一次：
+     * 设置未勾选、显示歌词、显示摄像头/麦克风监测指示任一阻断条件成立即重置空闲计时；
+     * 连续空闲满 10 分钟自动收起扩展岛。
+     */
+    private void startIdleAutoCollapseTimer() {
+        stopIdleAutoCollapseTimer();
+        idleExpandSince = System.currentTimeMillis();
+        idleAutoCollapseTimer = new Timer(IDLE_AUTO_COLLAPSE_CHECK_MS, e -> checkIdleAutoCollapse());
+        idleAutoCollapseTimer.start();
+    }
+
+    private void checkIdleAutoCollapse() {
+        if (!isExpandedIslandVisible() || isExpanding || isCollapsing) {
+            stopIdleAutoCollapseTimer();
+            return;
+        }
+        if (!AppConstants.isAutoCollapseExpandedEnabled()
+                || isLyricsShowing()
+                || isDeviceUsageIndicatorShowing()) {
+            // 任一阻断条件成立：重置空闲起点，不触发自动收起
+            idleExpandSince = System.currentTimeMillis();
+            return;
+        }
+        if (System.currentTimeMillis() - idleExpandSince >= IDLE_AUTO_COLLAPSE_MS) {
+            stopIdleAutoCollapseTimer();
+            AppLogger.info("IslandWindow", "扩展岛已连续空闲 10 分钟，自动收起");
+            hideExpandedIslandSlideUp();
+        }
+    }
+
+    private void stopIdleAutoCollapseTimer() {
+        if (idleAutoCollapseTimer != null) {
+            idleAutoCollapseTimer.stop();
+            idleAutoCollapseTimer = null;
+        }
+    }
+
+    /** 扩展岛当前是否显示歌词内容（音乐卡片可见且有活跃媒体会话，含"歌词加载中"占位） */
+    private boolean isLyricsShowing() {
+        return musicPanelShownInExpanded
+                && currentMusicInfo != null
+                && currentMusicInfo.hasSession();
+    }
+
+    /** 扩展岛当前是否显示摄像头/麦克风使用监测指示 */
+    private boolean isDeviceUsageIndicatorShowing() {
+        return cameraInUse || micInUse
+                || (deviceUsagePanel != null && deviceUsagePanel.isVisible());
     }
 
     @Override
@@ -1753,6 +2291,9 @@ public class IslandWindow extends JWindow implements Serializable {
 
             stopCoverRotation();
             stopLyricScrollTimer();
+            stopUsageAnimTimer();
+            cancelDeviceAutoHideTimer();
+            stopIdleAutoCollapseTimer();
             if (gestureSlideAnimTimer != null) { gestureSlideAnimTimer.stop(); gestureSlideAnimTimer = null; }
 
             if (musicMonitor != null) {
@@ -1769,6 +2310,10 @@ public class IslandWindow extends JWindow implements Serializable {
             
             if (wifiMonitor != null) {
                 wifiMonitor.stop();
+            }
+
+            if (privacyMonitor != null) {
+                privacyMonitor.stop();
             }
             
             if (weatherMonitor != null) {
@@ -1802,6 +2347,10 @@ public class IslandWindow extends JWindow implements Serializable {
     private void loadIcons() {
         bluetoothIcon = loadImage("/icons/bluetooth.png");
         wifiIcon = loadImage("/icons/wifi.png");
+        cameraInUseIcon = loadImage("/icons/摄像头使用中.png");
+        micInUseIcon = loadImage("/icons/麦克风使用中.png");
+        cameraIndicator.icon = cameraInUseIcon;
+        micIndicator.icon = micInUseIcon;
     }
     
     private void cleanupImageResources() {
@@ -1809,6 +2358,10 @@ public class IslandWindow extends JWindow implements Serializable {
         bluetoothIcon = null;
         flushImage(wifiIcon);
         wifiIcon = null;
+        flushImage(cameraInUseIcon);
+        cameraInUseIcon = null;
+        flushImage(micInUseIcon);
+        micInUseIcon = null;
         flushImage(musicCoverImage);
         musicCoverImage = null;
     }

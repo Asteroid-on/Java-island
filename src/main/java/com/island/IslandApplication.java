@@ -1,6 +1,7 @@
 package com.island;
 
 import com.island.battery.BatteryMonitor;
+import com.island.privacy.PrivacyMonitor;
 import com.island.config.AppConstants;
 import com.island.island.ui.IslandWindow;
 import com.island.music.MusicMonitor;
@@ -90,6 +91,10 @@ public class IslandApplication {
             // 初始化电池监控
             BatteryMonitor batteryMonitor = new BatteryMonitor();
             island.setBatteryMonitor(batteryMonitor);
+
+            // 初始化摄像头/麦克风使用状态监控
+            PrivacyMonitor privacyMonitor = new PrivacyMonitor();
+            island.setPrivacyMonitor(privacyMonitor);
 
             Toolkit toolkit = Toolkit.getDefaultToolkit();
             Dimension screenSize = toolkit.getScreenSize();
