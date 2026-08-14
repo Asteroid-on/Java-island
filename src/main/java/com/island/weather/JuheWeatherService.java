@@ -1,5 +1,6 @@
 package com.island.weather;
 
+import com.island.config.AppConfig;
 import com.island.util.CityCoordinateTable;
 import com.island.util.AppLogger;
 import com.island.util.WindowsLocationProvider;
@@ -20,11 +21,15 @@ import java.util.concurrent.TimeUnit;
  */
 public class JuheWeatherService {
 
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledExecutorService scheduler = createScheduler();
     private WeatherListener listener;
     private volatile boolean running = false;
 
-    private static final String API_KEY = "a20806587e5750d0a58e1b3af4305a34";
+    /**
+     * API Key：优先级 系统属性 juhe.api.key → classpath config.properties → 空字符串。
+     * 为空时直接触发 onWeatherError，由 HybridWeatherService 降级到 Open-Meteo。
+     */
+    private static final String API_KEY = AppConfig.get("juhe.api.key", "");
     private static final String API_URL = "https://apis.juhe.cn/simpleWeather/query";
 
 
@@ -38,9 +43,17 @@ public class JuheWeatherService {
 
     public void start() {
         if (running) return;
-        running = true;
-        fetchWeather();
-        scheduler.scheduleAtFixedRate(this::fetchWeather, 60, 60, TimeUnit.MINUTES);
+        synchronized (this) {
+            if (running) return;
+            running = true;
+            if (scheduler.isShutdown()) {
+                scheduler = createScheduler();
+            }
+            // 首次拉取放入调度线程异步执行，绝不阻塞调用线程（如 EDT），
+            // 否则定位 EXE + 网络请求最长会卡住 UI 十余秒，拖慢蓝牙/WiFi 通知
+            scheduler.schedule(this::fetchWeather, 0, TimeUnit.SECONDS);
+            scheduler.scheduleAtFixedRate(this::fetchWeather, 60, 60, TimeUnit.MINUTES);
+        }
     }
 
     public void stop() {
@@ -48,8 +61,21 @@ public class JuheWeatherService {
         scheduler.shutdown();
     }
 
+    /** 守护线程调度器：应用退出时不阻塞 JVM，stop() 后可重建复用。 */
+    private static ScheduledExecutorService createScheduler() {
+        return Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "JuheWeatherService");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
     private void fetchWeather() {
         try {
+            if (API_KEY.isEmpty()) {
+                handleError("未配置聚合数据 API Key");
+                return;
+            }
             String cityName = getCityName();
             if (cityName == null) { handleError("无法获取城市名"); return; }
 

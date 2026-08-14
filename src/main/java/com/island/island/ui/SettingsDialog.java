@@ -1,5 +1,6 @@
 package com.island.island.ui;
 
+import com.island.config.AppConfig;
 import com.island.config.AppConstants;
 import com.island.util.AppLogger;
 import com.island.util.WindowsStartupManager;
@@ -705,7 +706,8 @@ public class SettingsDialog extends JDialog {
     //  日志操作
     // ═══════════════════════════════════════════
 
-    private static final String REPORT_MAIL = "asteroid_on@qq.com";
+    /** 错误报告接收邮箱：仅从配置 report.mail 读取，未配置时为空（邮箱路径降级为剪贴板） */
+    private static final String REPORT_MAIL = AppConfig.get("report.mail", "");
 
     private void refreshLogPanel() {
         if (logPathLabel == null) return;
@@ -834,11 +836,18 @@ public class SettingsDialog extends JDialog {
         }
     }
 
-    /** 次路径：跳转 QQ 邮箱网页版写信页（to/subject/body 预填，未登录先进入登录页）。 */
+    /** 次路径：跳转 QQ 邮箱网页版写信页（预填依赖登录 sid，不可靠，弹窗提供手动填写指引）。 */
     private void openWebMailDraft() {
         String subject = buildReportSubject();
         String bodyText = buildPlainBody();
         copyToClipboard(subject + System.lineSeparator() + System.lineSeparator() + bodyText);
+        if (REPORT_MAIL.isEmpty()) {
+            AppLogger.warn("Settings", "未配置 report.mail，跳过打开邮箱，报告已复制到剪贴板");
+            JOptionPane.showMessageDialog(this,
+                    "未配置报告接收邮箱（config.properties 的 report.mail）。\n报告已复制到剪贴板，请手动粘贴发送。",
+                    "提交错误报告", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
         try {
             String url = "https://mail.qq.com/cgi-bin/frame_html?url=compose"
                     + "&to=" + URLEncoder.encode(REPORT_MAIL, StandardCharsets.UTF_8)
@@ -846,12 +855,17 @@ public class SettingsDialog extends JDialog {
                     + "&body=" + URLEncoder.encode(bodyText, StandardCharsets.UTF_8);
             Desktop.getDesktop().browse(URI.create(url));
             JOptionPane.showMessageDialog(this,
-                    "已打开 QQ 邮箱网页版写信页（未登录会先进入登录页）。\n报告同时已复制到剪贴板。",
+                    "已打开 QQ 邮箱写信页。\n\n"
+                    + "受邮箱登录会话限制，收件人/主题可能未自动填入，\n"
+                    + "请按下表手动填写（主题即剪贴板内容第一行）：\n\n"
+                    + "收件人：" + REPORT_MAIL + "\n"
+                    + "主题：" + subject + "\n"
+                    + "正文：在写信页按 Ctrl+V 粘贴",
                     "提交错误报告", JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception ex) {
             AppLogger.warn("Settings", "打开网页版邮箱失败", ex);
             JOptionPane.showMessageDialog(this,
-                    "无法打开浏览器。\n报告已复制到剪贴板，请手动粘贴发送至 " + REPORT_MAIL + "。",
+                    "无法打开浏览器。\n报告已复制到剪贴板，请手动发送至：" + REPORT_MAIL + "\n主题：" + subject,
                     "提交错误报告", JOptionPane.WARNING_MESSAGE);
         }
     }

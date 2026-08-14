@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit;
  * Open-Meteo天气服务 - 使用Open-Meteo API获取当前位置天气
  */
 public class OpenMeteoWeatherService {
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledExecutorService scheduler = createScheduler();
     private WeatherListener listener;
     private volatile boolean running = false;
     
@@ -38,18 +38,31 @@ public class OpenMeteoWeatherService {
 
     public void start() {
         if (running) return;
-        running = true;
-        
-        // 立即获取一次天气
-        fetchWeather();
-        
-        // 每小时更新一次天气
-        scheduler.scheduleAtFixedRate(this::fetchWeather, 60, 60, TimeUnit.MINUTES);
+        synchronized (this) {
+            if (running) return;
+            running = true;
+            if (scheduler.isShutdown()) {
+                scheduler = createScheduler();
+            }
+            // 首次拉取改为异步执行，避免阻塞调用线程（如 EDT）导致通知延迟
+            scheduler.schedule(this::fetchWeather, 0, TimeUnit.SECONDS);
+            // 每小时更新一次天气
+            scheduler.scheduleAtFixedRate(this::fetchWeather, 60, 60, TimeUnit.MINUTES);
+        }
     }
 
     public void stop() {
         running = false;
         scheduler.shutdown();
+    }
+
+    /** 守护线程调度器：应用退出时不阻塞 JVM，stop() 后可重建复用。 */
+    private static ScheduledExecutorService createScheduler() {
+        return Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "OpenMeteoWeatherService");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     /**

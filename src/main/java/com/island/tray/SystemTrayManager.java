@@ -130,7 +130,9 @@ public class SystemTrayManager {
         MenuItem settingsItem = new MenuItem("设  置", MENU_W, ITEM_H, BG_NORMAL, BG_HOVER, FG_TEXT, MENU_FONT, settingsIcon, 20);
         settingsItem.addMouseListener(new MouseAdapter() {
             @Override
-            public void mouseClicked(MouseEvent e) {
+            public void mousePressed(MouseEvent e) {
+                // 用 mousePressed 而非 mouseClicked：先于 windowLostFocus 的延迟销毁执行，
+                // 避免主岛 toFront 抢焦点导致菜单提前 dispose、点击事件被吞
                 hidePopup();
                 SwingUtilities.invokeLater(SystemTrayManager.this::showOrActivateSettings);
             }
@@ -156,7 +158,7 @@ public class SystemTrayManager {
         MenuItem exitItem = new MenuItem("退  出", MENU_W, ITEM_H, BG_NORMAL, BG_HOVER, FG_TEXT, MENU_FONT, exitIcon, 20);
         exitItem.addMouseListener(new MouseAdapter() {
             @Override
-            public void mouseClicked(MouseEvent e) {
+            public void mousePressed(MouseEvent e) {
                 hidePopup();
                 dispose();
                 System.exit(0);
@@ -192,15 +194,18 @@ public class SystemTrayManager {
         popupDialog.addWindowFocusListener(new WindowAdapter() {
             @Override
             public void windowLostFocus(WindowEvent e) {
-                // 仅关闭托盘菜单本身，不影响已打开的设置窗口等其他窗口；
-                // 延迟到事件分发结束再销毁，避免在焦点事件回调中 dispose 引发重入
+                // 延迟 200ms 关闭：给菜单项 mousePressed 留出派发时间，
+                // 避免焦点被主岛 toFront 抢走时菜单在点击前被销毁
                 JDialog lostDialog = popupDialog;
-                SwingUtilities.invokeLater(() -> {
-                    // 校验实例：若延迟期间用户已重新打开新菜单，则不误关新菜单
+                Timer closeTimer = new Timer(200, ev -> {
+                    // 实例校验：若期间菜单项动作已触发（popupDialog 已置空）则不重复关闭；
+                    // 若用户已重新打开新菜单也不误关
                     if (popupDialog == lostDialog) {
                         hidePopup();
                     }
                 });
+                closeTimer.setRepeats(false);
+                closeTimer.start();
             }
         });
 
@@ -285,10 +290,12 @@ public class SystemTrayManager {
 
         SettingsDialog dialog = settingsDialog;
         if (dialog.isVisible()) {
-            // 已存在并可见：置前并请求焦点即可
-            // （设置窗口为 JDialog，标题栏无最小化按钮，无需恢复最小化状态）
+            // 已存在并可见：置前并请求焦点。
+            // Windows 上 toFront 受前台窗口锁定经常失效，用 alwaysOnTop 弹跳强制置前
+            dialog.setAlwaysOnTop(true);
             dialog.toFront();
             dialog.requestFocus();
+            SwingUtilities.invokeLater(() -> dialog.setAlwaysOnTop(false));
         } else {
             // 新创建或隐藏的窗口：直接显示（新窗口自动置前并获得激活）；
             // 模态窗口的 setVisible(true) 会阻塞当前 EDT 事件直至窗口关闭，

@@ -38,6 +38,11 @@ public final class WindowsLocationProvider {
 
     private static final int LOCATION_TIMEOUT_SEC = 12;
 
+    /** 定位结果缓存：10 分钟内复用，避免聚合与 Open-Meteo 两路重复拉起定位 EXE */
+    private static final long LOCATION_CACHE_TTL_MS = 10 * 60 * 1000;
+    private static volatile LocationResult cachedLocation;
+    private static volatile long cachedLocationAt;
+
     // ═══════════════════════════════════════════
     // 嵌入式 C# 源码（写临时文件 → csc 编译）
     // ═══════════════════════════════════════════
@@ -131,6 +136,11 @@ public final class WindowsLocationProvider {
      * @return 坐标，失败返回 null
      */
     public static LocationResult getLocation() {
+        long now = System.currentTimeMillis();
+        LocationResult cached = cachedLocation;
+        if (cached != null && now - cachedLocationAt < LOCATION_CACHE_TTL_MS) {
+            return cached;
+        }
         if (!ensureExe()) return null;
         try {
             Process p = new ProcessBuilder(EXE_PATH.toAbsolutePath().toString()).start();
@@ -162,7 +172,10 @@ public final class WindowsLocationProvider {
                 double lon = Double.parseDouble(parts[1]);
                 double acc = parts.length >= 3 ? Double.parseDouble(parts[2]) : 999;
                 System.out.printf("[Windows定位] 成功: %.6f, %.6f (精度 %.0fm)%n", lat, lon, acc);
-                return new LocationResult(lat, lon, acc);
+                LocationResult location = new LocationResult(lat, lon, acc);
+                cachedLocation = location;
+                cachedLocationAt = now;
+                return location;
             }
             System.err.println("[Windows定位] 无法解析输出: " + result);
             return null;
