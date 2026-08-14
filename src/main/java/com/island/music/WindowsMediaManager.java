@@ -97,6 +97,7 @@ public final class WindowsMediaManager {
                 .endTimeTicks(json.optLong("endTimeTicks", 0))
                 .sourceAppId(json.optString("sourceAppId", ""))
                 .thumbnailBase64(json.optString("thumbnail", ""))
+                .playerMinimized(json.optBoolean("isMinimized", false))
                 .build();
     }
 }

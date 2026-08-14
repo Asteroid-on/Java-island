@@ -91,7 +91,7 @@ public class IslandWindow extends JWindow implements Serializable {
     private static final double TEXT_VISIBLE_THRESHOLD_RATIO = 2.0/3.0;
 
     private static final int EXPANDED_WIDTH = 450;
-    private static final int EXPANDED_HEIGHT = 55;
+    private static final int EXPANDED_HEIGHT = 54;
     private static final int EXPAND_ANIM_DURATION_MS = 280;
     private static final int EXPAND_ANIM_FRAME_MS = 10;
     private static final int SLIDE_ANIM_DURATION_MS = 400;
@@ -136,6 +136,8 @@ public class IslandWindow extends JWindow implements Serializable {
     private String lastFetchedTrackId = "";
     private String lastFetchedCoverTrackId = "";
     private String lastCoverBase64 = "";
+    /** SMTC Base64 封面成功应用对应的曲目标识（title|artist），用于 URL 源封面跳过判断 */
+    private String smTcCoverAppliedTrackId = "";
     /** 上一次处于严格播放状态的来源播放器标识，用于检测活跃播放器切换 */
     private String lastActiveSourceAppId = "";
     // 仅使用 daemon 汇报的 positionTicks 作为歌词进度
@@ -156,7 +158,6 @@ public class IslandWindow extends JWindow implements Serializable {
     private JWindow expandedWindow;
     private boolean isExpanding = false;
     private boolean isCollapsing = false;
-    private Timer hideDelayTimer;
 
     // ── 电池 ──
     private transient BatteryMonitor batteryMonitor;
@@ -175,6 +176,8 @@ public class IslandWindow extends JWindow implements Serializable {
     private static final int USAGE_PANEL_PAD = 6;
     /** 设备占用自动弹出扩展岛后保持显示的时长 */
     private static final int DEVICE_AUTO_HIDE_MS = 5000;
+    /** 音乐停止播放后自动收回扩展岛的等待时长（连续未恢复播放满 2 分钟） */
+    private static final int MUSIC_STOP_AUTO_HIDE_MS = 2 * 60 * 1000;
     /** 扩展岛空闲自动收起：仅用户主动展开时启动，连续空闲满此时长后自动收起 */
     private static final int IDLE_AUTO_COLLAPSE_MS = 10 * 60 * 1000;
     /** 空闲自动收起巡检间隔 */
@@ -188,6 +191,13 @@ public class IslandWindow extends JWindow implements Serializable {
     /** 当前扩展岛是否由设备占用事件自动弹出（决定 5 秒自动隐藏是否生效） */
     private boolean deviceAutoExpanded = false;
     private Timer deviceAutoHideTimer;
+    /** 当前扩展岛是否因音乐播放自动弹出而常驻 */
+    private boolean musicAutoExpanded = false;
+    private Timer musicStopAutoHideTimer;
+    /** 本次播放会话内已自动显示过音乐面板（用户滚轮切回电池卡片后不再强制切回） */
+    private boolean musicPanelAutoShownForSession = false;
+    /** 用户在播放期间手动折叠音乐岛后，本次播放会话不再自动弹出 */
+    private boolean musicPopupSuppressedByUser = false;
     /** 扩展岛空闲自动收起巡检定时器（仅用户主动展开时启动） */
     private Timer idleAutoCollapseTimer;
     /** 空闲计时起点：任一阻断条件（未勾选/歌词显示/设备监测指示）出现时重置 */
@@ -1128,10 +1138,14 @@ public class IslandWindow extends JWindow implements Serializable {
         deviceAutoHideTimer = new Timer(DEVICE_AUTO_HIDE_MS, e -> {
             deviceAutoHideTimer = null;
             deviceAutoExpanded = false;
-            if (isExpandedIslandVisible()) {
-                AppLogger.info("IslandWindow", "设备占用自动弹出超时，自动隐藏扩展岛");
-                hideExpandedIslandSlideUp();
+            if (!isExpandedIslandVisible()) return;
+            if (currentMusicInfo != null && currentMusicInfo.isStrictlyPlaying()) {
+                // 音乐播放期间扩展岛保持常驻，跳过设备占用超时隐藏
+                AppLogger.info("IslandWindow", "音乐播放中，跳过设备占用超时自动隐藏");
+                return;
             }
+            AppLogger.info("IslandWindow", "设备占用自动弹出超时，自动隐藏扩展岛");
+            hideExpandedIslandSlideUp();
         });
         deviceAutoHideTimer.setRepeats(false);
         deviceAutoHideTimer.start();
@@ -1429,18 +1443,26 @@ public class IslandWindow extends JWindow implements Serializable {
             return;
         }
         if (expandedWindow != null && expandedWindow.isVisible()) {
-            hideExpandedIsland();
+            hideExpandedIslandByUser();
         } else {
             showExpandedIsland();
         }
+    }
+
+    /** 用户手动折叠扩展岛：播放期间折叠后本次会话不再自动弹出音乐岛，避免打扰 */
+    private void hideExpandedIslandByUser() {
+        if (currentMusicInfo != null && currentMusicInfo.isStrictlyPlaying()) {
+            musicPopupSuppressedByUser = true;
+        }
+        hideExpandedIsland();
     }
 
     private void showExpandedIsland() {
         if (expandedWindow != null) {
             expandedWindow.dispose();
         }
-        // 记录本次展开是否由用户主动点击触发（设备占用自动弹出不参与空闲自动收起）
-        final boolean userInitiated = !deviceAutoExpanded;
+        // 记录本次展开是否由用户主动点击触发（设备/音乐自动弹出不参与空闲自动收起）
+        final boolean userInitiated = !deviceAutoExpanded && !musicAutoExpanded;
         stopIdleAutoCollapseTimer();
         isExpanding = true;
 
@@ -1534,7 +1556,7 @@ public class IslandWindow extends JWindow implements Serializable {
         expandedWindow.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
-                hideExpandedIsland();
+                hideExpandedIslandByUser();
             }
         });
 
@@ -1565,7 +1587,24 @@ public class IslandWindow extends JWindow implements Serializable {
                 // 设备占用触发的自动弹出：展开完成后再显示图标，并启动 5 秒自动隐藏计时
                 if (deviceAutoExpanded) {
                     applyUsageStates();
-                    startDeviceAutoHideTimer();
+                    if (currentMusicInfo != null && currentMusicInfo.isStrictlyPlaying()) {
+                        // 音乐播放中：取消设备 5 秒自动隐藏，改为展示音乐面板常驻
+                        cancelDeviceAutoHideTimer();
+                        deviceAutoExpanded = false;
+                        musicAutoExpanded = true;
+                        SwingUtilities.invokeLater(() -> {
+                            musicPanelAutoShownForSession = true;
+                            showMusicPanelInExpandedIsland();
+                        });
+                    } else {
+                        startDeviceAutoHideTimer();
+                    }
+                } else if (musicAutoExpanded) {
+                    // 音乐自动弹出：展开完成后展示音乐面板（封面/歌词/歌名）
+                    SwingUtilities.invokeLater(() -> {
+                        musicPanelAutoShownForSession = true;
+                        showMusicPanelInExpandedIsland();
+                    });
                 } else if (userInitiated) {
                     // 用户主动展开：启动空闲自动收起巡检（勾选设置后生效）
                     startIdleAutoCollapseTimer();
@@ -1599,13 +1638,14 @@ public class IslandWindow extends JWindow implements Serializable {
         cancelDeviceAutoHideTimer();
         deviceAutoExpanded = false;
         stopIdleAutoCollapseTimer();
+        cancelMusicStopAutoHideTimer();
+        musicAutoExpanded = false;
+        musicPanelAutoShownForSession = false;
 
         // 重置卡片切换状态
         gestureSlideProgress = 0f;
         musicPanelShownInExpanded = false;
         if (gestureSlideAnimTimer != null) { gestureSlideAnimTimer.stop(); gestureSlideAnimTimer = null; }
-
-        cancelDelayedHide();
 
         isCollapsing = true;
 
@@ -1892,8 +1932,7 @@ public class IslandWindow extends JWindow implements Serializable {
             lastDaemonEndTimeMs = 0;
             fetchingLyrics = false;
             fetchingCover = false;
-            musicCoverImage = null;
-            lastCoverBase64 = "";
+            // 保留旧封面显示，新封面异步到达后无缝替换，避免切换瞬间封面闪失
             lastFetchedTrackId = "";
             lastFetchedCoverTrackId = "";
             if (musicLyricsLabel != null) { musicLyricsLabel.setText(" "); musicLyricsLabel.repaint(); }
@@ -1909,19 +1948,28 @@ public class IslandWindow extends JWindow implements Serializable {
         if (info.hasSession() && !trackId.equals(lastFetchedTrackId) && !info.getTitle().isEmpty()) {
             lastFetchedTrackId = trackId;
             if (!activeSourceSwitched) {
-                // 切歌时重置状态（但活跃播放器切换时已在上面重置过，避免重复操作）
+                // 切歌时仅重置歌词状态；封面保留显示，新封面异步到达后无缝替换，避免闪失
                 lyricsService.clear();
                 lrcLines = Collections.emptyList();
                 currentLyricIndex = -1;
                 lastDaemonEndTimeMs = 0;
                 fetchingLyrics = false;
                 fetchingCover = false;
-                musicCoverImage = null;
-                lastCoverBase64 = "";
                 if (musicLyricsLabel != null) { musicLyricsLabel.setText(" "); musicLyricsLabel.repaint(); }
             }
             fetchLyricsAsync(info.getTitle(), info.getArtist());
             fetchCoverAsync(info.getTitle(), info.getArtist());
+            // 面板已显示时立即应用新曲目信息（歌名/艺术家/SMTC 封面）
+            if (musicPanelShownInExpanded && musicPanel != null) {
+                updateMusicPanelContent();
+            }
+        }
+
+        // SMTC 缩略图优先：b64 到达/变化时立即应用，覆盖可能先到的 URL 封面
+        if (musicPanelShownInExpanded && musicPanel != null
+                && !info.getThumbnailBase64().isEmpty()
+                && !info.getThumbnailBase64().equals(lastCoverBase64)) {
+            updateMusicPanelContent();
         }
 
         // 媒体会话出现：占位面板 → 自动切换到音乐面板
@@ -1931,23 +1979,67 @@ public class IslandWindow extends JWindow implements Serializable {
             ensureMusicPanelInExpandedWindow();
         }
 
-        if (isPlaying && !wasPlaying) {
-            cancelDelayedHide();
-            if (isStrictly && musicPanelShownInExpanded) { startCoverRotation(); startLyricScrollTimer(); }
-        } else if (!isPlaying && wasPlaying) {
+        // ── 音乐岛自动弹出与常驻 ──
+        if (activeSourceSwitched) {
+            musicPopupSuppressedByUser = false;
+            musicPanelAutoShownForSession = false;
+        }
+        updateMusicIslandAutoPopup(info);
+
+        // 严格播放恢复（暂停→播放、会话恢复等）：取消停止满 2 分钟自动收回计时，继续常驻
+        boolean playbackResumed = isStrictly && !wasStrictly;
+        boolean sessionRestored = isPlaying && !wasPlaying;
+        if (playbackResumed || sessionRestored) {
+            cancelMusicStopAutoHideTimer();
+            musicPopupSuppressedByUser = false;
+            if (playbackResumed && musicPanelShownInExpanded) { startCoverRotation(); startLyricScrollTimer(); }
+        } else if (wasStrictly && !isStrictly) {
+            // 停止播放（变为暂停/停止/会话丢失）：每次暂停均启动 2 分钟自动收回计时，
+            // 到期时仅在扩展岛显示音乐面板的情况下才真正收回（见 startMusicStopAutoHideTimer）
             stopCoverRotation(); stopLyricScrollTimer();
-            currentLyricIndex = -1; lastFetchedTrackId = "";
-            if (isExpandedIslandVisible()) scheduleDelayedHide();
+            // 仅重置歌词游标；保留 lastFetchedTrackId 与已拉取的歌词/封面，
+            // 避免暂停后恢复播放同一首歌时被切歌检测误判，导致封面被清空重新拉取而短暂消失
+            currentLyricIndex = -1;
+            musicPopupSuppressedByUser = false;
+            musicPanelAutoShownForSession = false;
+            if (isExpandedIslandVisible()) startMusicStopAutoHideTimer();
         } else if (isPlaying && isExpandedIslandVisible()) {
             if (musicPanelShownInExpanded) {
-                if (isStrictly && !wasStrictly) { startCoverRotation(); startLyricScrollTimer(); }
-                else if (!isStrictly && wasStrictly) { stopCoverRotation(); stopLyricScrollTimer(); }
-                else if (isStrictly) {
+                if (isStrictly) {
                     if (coverRotationTimer == null) startCoverRotation();
                     if (lyricScrollTimer == null) startLyricScrollTimer();
                 }
                 updateProgressDisplay(info);
             }
+        }
+    }
+
+    /**
+     * 音乐岛自动弹出逻辑：
+     * 音乐严格播放且播放器窗口最小化/不可见时，若扩展岛未显示或尚未显示音乐面板，
+     * 主动弹出扩展岛并展示音乐面板；播放期间同时取消设备占用自动隐藏，保证常驻。
+     */
+    private void updateMusicIslandAutoPopup(MusicInfo info) {
+        if (!info.isStrictlyPlaying()) return;
+        if (isExpanding || isCollapsing) return;
+        // 播放期间扩展岛常驻：取消设备 5 秒自动隐藏与停止收回计时
+        cancelDeviceAutoHideTimer();
+        deviceAutoExpanded = false;
+        cancelMusicStopAutoHideTimer();
+        if (!info.isPlayerMinimized()) return;
+        if (musicPopupSuppressedByUser) return;
+        if (musicPanelShownInExpanded) {
+            musicPanelAutoShownForSession = true;
+            return;
+        }
+        if (!isExpandedIslandVisible()) {
+            AppLogger.info("IslandWindow", "检测到音乐播放且播放器最小化，自动弹出音乐岛");
+            musicAutoExpanded = true;
+            musicPanelAutoShownForSession = true;
+            showExpandedIsland();
+        } else if (!musicPanelAutoShownForSession) {
+            musicPanelAutoShownForSession = true;
+            showMusicPanelInExpandedIsland();
         }
     }
 
@@ -2008,6 +2100,7 @@ public class IslandWindow extends JWindow implements Serializable {
         String b64 = currentMusicInfo.getThumbnailBase64();
         if (!b64.isEmpty()) {
             if (!b64.equals(lastCoverBase64)) {
+                smTcCoverAppliedTrackId = "";
                 try {
                     byte[] data = Base64.getDecoder().decode(b64);
                     Image raw = Toolkit.getDefaultToolkit().createImage(data);
@@ -2016,10 +2109,16 @@ public class IslandWindow extends JWindow implements Serializable {
                     if (raw.getWidth(null) > 0) {
                         musicCoverImage = createCircularCover(raw, COVER_HIRES);
                         lastCoverBase64 = b64;
+                        smTcCoverAppliedTrackId = fullTitle + "|" + fullArtist;
                     }
-                } catch (Exception ex) { musicCoverImage = null; }
+                } catch (Exception ex) {
+                    // 解码失败：保留当前封面显示，标记保持未应用，让 URL 源补位，避免封面卡死
+                }
+            } else {
+                smTcCoverAppliedTrackId = fullTitle + "|" + fullArtist;
             }
         } else {
+            smTcCoverAppliedTrackId = "";
             // 避免每轮询重复发起请求或清空已显示的封面
             String currentTrackId = fullTitle + "|" + fullArtist;
             boolean alreadyFetching = fetchingCover && currentTrackId.equals(lastFetchedCoverTrackId);
@@ -2126,10 +2225,14 @@ public class IslandWindow extends JWindow implements Serializable {
                             System.out.println("[IslandWindow] 封面已过期（曲目已切换），丢弃");
                             return;
                         }
-                        // SMTC 已提供权威封面时，跳过 iTunes 结果，避免两个合法封面源交替闪烁
+                        // SMTC 缩略图优先：当前曲目已有 SMTC 缩略图时立即尝试应用，
+                        // 应用成功则跳过 URL 结果；解码失败则仍用 URL 结果补位，防止封面卡死
                         if (!currentMusicInfo.getThumbnailBase64().isEmpty()) {
-                            System.out.println("[IslandWindow] SMTC封面已就绪，跳过iTunes封面");
-                            return;
+                            updateMusicPanelContent();
+                            if (currentTrackId.equals(smTcCoverAppliedTrackId)) {
+                                System.out.println("[IslandWindow] SMTC封面已应用，跳过URL封面");
+                                return;
+                            }
                         }
                         musicCoverImage = createCircularCover(cover, COVER_HIRES);
                         if (musicCoverLabel != null) musicCoverLabel.repaint();
@@ -2202,18 +2305,37 @@ public class IslandWindow extends JWindow implements Serializable {
     }
 
     // ═══════════════════════════════════════════
-    //  延迟隐藏
+    //  音乐停止后自动收回（连续未恢复播放满 2 分钟）
     // ═══════════════════════════════════════════
 
-    private void scheduleDelayedHide() {
-        if (hideDelayTimer != null) hideDelayTimer.stop();
-        hideDelayTimer = new Timer(1000, e -> { hideDelayTimer = null; if (isExpandedIslandVisible()) hideExpandedIslandSlideUp(); });
-        hideDelayTimer.setRepeats(false);
-        hideDelayTimer.start();
+    private void startMusicStopAutoHideTimer() {
+        cancelMusicStopAutoHideTimer();
+        musicStopAutoHideTimer = new Timer(MUSIC_STOP_AUTO_HIDE_MS, e -> {
+            musicStopAutoHideTimer = null;
+            musicAutoExpanded = false;
+            // 2 分钟自动收回仅在扩展岛显示音乐面板时生效：用户已滚轮切回电池卡片
+            // 则不按音乐停止规则收起，交由空闲自动收起巡检处理
+            if (isExpandedIslandVisible()
+                    && musicPanelShownInExpanded
+                    && (currentMusicInfo == null || !currentMusicInfo.isStrictlyPlaying())) {
+                AppLogger.info("IslandWindow", "音乐停止播放已满 2 分钟，自动收回扩展岛");
+                hideExpandedIslandSlideUp();
+            }
+        });
+        musicStopAutoHideTimer.setRepeats(false);
+        musicStopAutoHideTimer.start();
     }
 
-    private void cancelDelayedHide() {
-        if (hideDelayTimer != null) { hideDelayTimer.stop(); hideDelayTimer = null; }
+    private void cancelMusicStopAutoHideTimer() {
+        if (musicStopAutoHideTimer != null) {
+            musicStopAutoHideTimer.stop();
+            musicStopAutoHideTimer = null;
+        }
+    }
+
+    /** 音乐严格播放期间扩展岛需常驻，阻断空闲自动收起 */
+    private boolean isMusicPlaybackResident() {
+        return currentMusicInfo != null && currentMusicInfo.isStrictlyPlaying();
     }
 
     // ═══════════════════════════════════════════
@@ -2239,7 +2361,8 @@ public class IslandWindow extends JWindow implements Serializable {
         }
         if (!AppConstants.isAutoCollapseExpandedEnabled()
                 || isLyricsShowing()
-                || isDeviceUsageIndicatorShowing()) {
+                || isDeviceUsageIndicatorShowing()
+                || isMusicPlaybackResident()) {
             // 任一阻断条件成立：重置空闲起点，不触发自动收起
             idleExpandSince = System.currentTimeMillis();
             return;
@@ -2293,6 +2416,7 @@ public class IslandWindow extends JWindow implements Serializable {
             stopLyricScrollTimer();
             stopUsageAnimTimer();
             cancelDeviceAutoHideTimer();
+            cancelMusicStopAutoHideTimer();
             stopIdleAutoCollapseTimer();
             if (gestureSlideAnimTimer != null) { gestureSlideAnimTimer.stop(); gestureSlideAnimTimer = null; }
 

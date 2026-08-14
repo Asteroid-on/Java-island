@@ -20,6 +20,8 @@ public final class MusicInfo {
     private final long endTimeTicks;
     private final String sourceAppId;
     private final String thumbnailBase64;
+    /** 播放器主窗口是否处于最小化或不可见状态（由 MediaInfoDaemon 的 isMinimized 字段上报） */
+    private final boolean playerMinimized;
 
     private MusicInfo(Builder builder) {
         this.hasSession = builder.hasSession;
@@ -32,6 +34,7 @@ public final class MusicInfo {
         this.endTimeTicks = builder.endTimeTicks;
         this.sourceAppId = builder.sourceAppId;
         this.thumbnailBase64 = builder.thumbnailBase64;
+        this.playerMinimized = builder.playerMinimized;
     }
 
     public boolean hasSession() { return hasSession; }
@@ -44,6 +47,7 @@ public final class MusicInfo {
     public long getEndTimeTicks() { return endTimeTicks; }
     public String getSourceAppId() { return sourceAppId; }
     public String getThumbnailBase64() { return thumbnailBase64; }
+    public boolean isPlayerMinimized() { return playerMinimized; }
 
     /** 是否有活跃媒体会话（含 Paused） */
     public boolean isPlaying() {
@@ -80,6 +84,7 @@ public final class MusicInfo {
         private long endTimeTicks;
         private String sourceAppId = "";
         private String thumbnailBase64 = "";
+        private boolean playerMinimized;
 
         public Builder hasSession(boolean v) { hasSession = v; return this; }
         public Builder hasMusicProcess(boolean v) { hasMusicProcess = v; return this; }
@@ -91,6 +96,7 @@ public final class MusicInfo {
         public Builder endTimeTicks(long v) { endTimeTicks = v; return this; }
         public Builder sourceAppId(String v) { sourceAppId = v != null ? v : ""; return this; }
         public Builder thumbnailBase64(String v) { thumbnailBase64 = v != null ? v : ""; return this; }
+        public Builder playerMinimized(boolean v) { playerMinimized = v; return this; }
 
         public MusicInfo build() {
             return new MusicInfo(this);
