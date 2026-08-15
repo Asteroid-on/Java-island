@@ -9,12 +9,17 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Base64;
 
 /**
  * Java ↔ .NET 8 MediaInfoDaemon 桥接层。
  *
  * <p>MediaInfoDaemon 通过原子写入（tmp + rename）持续将 SMTC 媒体信息写入
  * {@code %TEMP%/media_info.json}，本类负责读取并解析为 {@link MusicInfo}。</p>
+ *
+ * <p>封面传输协议：新版 daemon 不再内嵌 base64 于 JSON，而是写入独立文件
+ * {@code %TEMP%/media_thumb.bin} 并在 JSON 中携带 {@code thumbFile}/{@code thumbHash}；
+ * 仅当 hash 变化时才读取文件（旧版内嵌 {@code thumbnail} 字段仍兼容）。</p>
  */
 public final class WindowsMediaManager {
 
@@ -22,7 +27,12 @@ public final class WindowsMediaManager {
             System.getProperty("java.io.tmpdir"), "media_info.json");
 
     private static final int MAX_RETRIES = 3;
-    private static final long RETRY_DELAY_MS = 50;
+    /** 读取/解析失败时的重试间隔：短间隔避免轮询线程长时间停滞 */
+    private static final long RETRY_DELAY_MS = 5;
+
+    /** 封面独立文件缓存：仅在 thumbHash 变化时重新读盘 + base64 */
+    private static volatile String cachedThumbHash = "";
+    private static volatile String cachedThumbBase64 = "";
 
     private WindowsMediaManager() {}
 
@@ -96,8 +106,44 @@ public final class WindowsMediaManager {
                 .positionTicks(json.optLong("positionTicks", 0))
                 .endTimeTicks(json.optLong("endTimeTicks", 0))
                 .sourceAppId(json.optString("sourceAppId", ""))
-                .thumbnailBase64(json.optString("thumbnail", ""))
+                .thumbnailBase64(resolveThumbnail(json))
                 .playerMinimized(json.optBoolean("isMinimized", false))
                 .build();
+    }
+
+    /**
+     * 解析封面字段：优先兼容旧版内嵌 base64；新版独立文件仅在 hash 变化时读盘。
+     * 避免每 300ms 轮询重复解析 MB 级 base64 字符串（实测 17ms/次）。
+     */
+    private static String resolveThumbnail(JSONObject json) {
+        // 1. 旧版协议：JSON 内嵌 base64（升级过渡期兼容）
+        String inline = json.optString("thumbnail", "");
+        if (!inline.isEmpty()) {
+            return inline;
+        }
+
+        // 2. 新版协议：thumbFile + thumbHash，hash 未变化时复用缓存
+        String thumbFile = json.optString("thumbFile", "");
+        String thumbHash = json.optString("thumbHash", "");
+        if (thumbFile.isEmpty()) {
+            if (!cachedThumbHash.isEmpty()) {
+                cachedThumbHash = "";
+                cachedThumbBase64 = "";
+            }
+            return "";
+        }
+        if (thumbHash.equals(cachedThumbHash)) {
+            return cachedThumbBase64;
+        }
+        try {
+            Path thumbPath = Paths.get(System.getProperty("java.io.tmpdir"), thumbFile);
+            byte[] data = Files.readAllBytes(thumbPath);
+            cachedThumbBase64 = Base64.getEncoder().encodeToString(data);
+            cachedThumbHash = thumbHash;
+            return cachedThumbBase64;
+        } catch (IOException e) {
+            // 读盘失败（daemon 正在原子替换）：返回旧缓存，下轮重试
+            return cachedThumbBase64;
+        }
     }
 }

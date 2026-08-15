@@ -53,6 +53,11 @@ public class ExpandedIslandController {
     private JWindow expandedWindow;
     private boolean isExpanding = false;
     private boolean isCollapsing = false;
+    /** dispose() 触发的折叠完成后是否销毁窗口（正常折叠仅隐藏复用） */
+    private boolean disposeWindowAfterCollapse = false;
+    /** 展开/折叠动画定时器（持有引用：dispose/收起时能及时停止，避免双动画并存与窗口销毁后继续驱动 EDT） */
+    private Timer expandAnimTimer;
+    private Timer collapseAnimTimer;
 
     /** 当前扩展岛是否由设备占用事件自动弹出（决定 5 秒自动隐藏是否生效） */
     private boolean deviceAutoExpanded = false;
@@ -145,7 +150,21 @@ public class ExpandedIslandController {
             gestureSlideAnimTimer.stop();
             gestureSlideAnimTimer = null;
         }
-        hide();
+        // 终止进行中的展开动画（展开 Timer 与折叠/销毁互斥，避免双动画并存）
+        if (expandAnimTimer != null) {
+            expandAnimTimer.stop();
+            expandAnimTimer = null;
+        }
+        isExpanding = false;
+        if (expandedWindow != null && expandedWindow.isVisible()) {
+            // 展开态销毁：折叠动画结束后再销毁窗口
+            disposeWindowAfterCollapse = true;
+            hide();
+        } else if (expandedWindow != null) {
+            // 已隐藏：直接销毁复用窗口
+            expandedWindow.dispose();
+            expandedWindow = null;
+        }
     }
 
     // ═══════════════════════════════════════════
@@ -158,8 +177,15 @@ public class ExpandedIslandController {
 
     /** 展开扩展岛（用户点击 / 设备占用 / 音乐自动弹出共用入口） */
     void show() {
-        if (expandedWindow != null) {
-            expandedWindow.dispose();
+        if (disposeWindowAfterCollapse) {
+            return; // 销毁流程进行中，不允许再次展开
+        }
+        // 复用已隐藏的窗口（避免每次展开重建 JWindow 原生窗口，点击→首帧 90~115ms → 30ms 内）
+        final boolean reuseWindow = expandedWindow != null;
+        if (!reuseWindow) {
+            expandedWindow = new JWindow();
+            expandedWindow.setBackground(IslandUiStyle.TRANSPARENT_BLACK);
+            expandedWindow.setAlwaysOnTop(true);
         }
         // 记录本次展开是否由用户主动点击触发（设备/音乐自动弹出不参与空闲自动收起）
         final boolean userInitiated = !deviceAutoExpanded && !musicAutoExpanded;
@@ -183,9 +209,9 @@ public class ExpandedIslandController {
         int targetY = 0;
         int targetH = IslandUiStyle.EXPANDED_HEIGHT;
 
-        expandedWindow = new JWindow();
-        expandedWindow.setBackground(IslandUiStyle.TRANSPARENT_BLACK);
-        expandedWindow.setAlwaysOnTop(true);
+        if (reuseWindow) {
+            expandedWindow.getContentPane().removeAll();
+        }
         expandedWindow.setLocation(startLoc);
         expandedWindow.setSize(startW, startH);
 
@@ -262,7 +288,11 @@ public class ExpandedIslandController {
 
         expandedWindow.setVisible(true);
 
-        Timer expandTimer = new Timer(IslandUiStyle.EXPAND_ANIM_FRAME_MS, null);
+        if (expandAnimTimer != null) {
+            expandAnimTimer.stop();
+            expandAnimTimer = null;
+        }
+        Timer expandTimer = expandAnimTimer = new Timer(IslandUiStyle.EXPAND_ANIM_FRAME_MS, null);
         final long animStart = System.currentTimeMillis();
         expandTimer.addActionListener(e -> {
             float elapsed = System.currentTimeMillis() - animStart;
@@ -274,13 +304,12 @@ public class ExpandedIslandController {
             int curX = (int) (startLoc.x + (targetX - startLoc.x) * eased);
             int curY = (int) (startLoc.y + (targetY - startLoc.y) * eased);
 
-            expandedWindow.setSize(curW, curH);
-            expandedWindow.setLocation(curX, curY);
+            expandedWindow.setBounds(curX, curY, curW, curH);
 
             if (progress >= 1.0f) {
                 ((Timer) e.getSource()).stop();
-                expandedWindow.setSize(IslandUiStyle.EXPANDED_WIDTH, targetH);
-                expandedWindow.setLocation(targetX, targetY);
+                expandAnimTimer = null;
+                expandedWindow.setBounds(targetX, targetY, IslandUiStyle.EXPANDED_WIDTH, targetH);
                 isExpanding = false;
                 layoutExpandedPanel();
                 deviceUsagePanel.startOrStopUsageAnimTimer();
@@ -338,6 +367,16 @@ public class ExpandedIslandController {
             return;
         }
 
+        // 捕获本地引用：动画期间窗口对象不再变化，避免与 dispose 流程竞争
+        final JWindow win = expandedWindow;
+
+        // 终止仍在进行的展开动画：避免展开/折叠双 Timer 并存（dispose 或反向触发竞态）
+        if (expandAnimTimer != null) {
+            expandAnimTimer.stop();
+            expandAnimTimer = null;
+        }
+        isExpanding = false;
+
         // 手动折叠（或自动隐藏执行）时取消 5 秒自动隐藏计时
         cancelDeviceAutoHideTimer();
         deviceAutoExpanded = false;
@@ -390,7 +429,11 @@ public class ExpandedIslandController {
         int targetW = config.width;
         int targetH = config.height;
 
-        Timer collapseTimer = new Timer(IslandUiStyle.EXPAND_ANIM_FRAME_MS, null);
+        if (collapseAnimTimer != null) {
+            collapseAnimTimer.stop();
+            collapseAnimTimer = null;
+        }
+        Timer collapseTimer = collapseAnimTimer = new Timer(IslandUiStyle.EXPAND_ANIM_FRAME_MS, null);
         final long animStart = System.currentTimeMillis();
         final int[] slideUpPhase = {0};
         final long[] slideUpPhaseStart = {animStart};
@@ -414,8 +457,7 @@ public class ExpandedIslandController {
                     // 阶段1：从两边向中间收缩成小球（保持中心点不变，全程可见）
                     int newW = (int) (startW - (startW - ball) * pe);
                     int newH = (int) (startH - (startH - ball) * pe);
-                    expandedWindow.setSize(newW, newH);
-                    expandedWindow.setLocation(centerX - newW / 2, centerY - newH / 2);
+                    win.setBounds(centerX - newW / 2, centerY - newH / 2, newW, newH);
                     if (phaseProgress >= 1.0f) {
                         slideUpPhase[0] = 1;
                         slideUpPhaseStart[0] = System.currentTimeMillis();
@@ -426,7 +468,7 @@ public class ExpandedIslandController {
                     int startY = centerY - ball / 2;
                     int targetY = -ball;
                     int curY = (int) (startY + (targetY - startY) * pe);
-                    expandedWindow.setLocation(centerX - ball / 2, curY);
+                    win.setLocation(centerX - ball / 2, curY);
                     animationDone = phaseProgress >= 1.0f;
                 }
             } else {
@@ -438,18 +480,24 @@ public class ExpandedIslandController {
                 int curH = (int) (startH + (targetH - startH) * eased);
                 int curX = (int) (startLoc.x + (targetLoc.x - startLoc.x) * eased);
                 int curY = (int) (startLoc.y + (targetLoc.y - startLoc.y) * eased);
-                expandedWindow.setSize(curW, curH);
-                expandedWindow.setLocation(curX, curY);
+                win.setBounds(curX, curY, curW, curH);
                 animationDone = progress >= 1.0f;
             }
 
             if (animationDone) {
                 ((Timer) e.getSource()).stop();
-                if (!windowHidden[0]) {
-                    expandedWindow.setVisible(false);
+                collapseAnimTimer = null;
+                if (disposeWindowAfterCollapse) {
+                    // dispose 流程：动画完成后真正销毁窗口
+                    win.dispose();
+                    if (expandedWindow == win) expandedWindow = null;
+                    disposeWindowAfterCollapse = false;
+                } else {
+                    // 正常折叠：隐藏并复用窗口（不再 dispose，避免每次展开重建原生窗口）
+                    if (!windowHidden[0] && win.isDisplayable()) {
+                        win.setVisible(false);
+                    }
                 }
-                expandedWindow.dispose();
-                expandedWindow = null;
                 isCollapsing = false;
                 // 收尾统一清理已结束的设备使用状态残留（设备仍在占用时不受影响）
                 deviceUsagePanel.cleanupStaleUsageState();

@@ -141,39 +141,51 @@ final class LyricsCache {
     /**
      * 将歌词存入缓存。若已有相同键的条目则更新歌词并刷新 TTL；
      * 否则新建条目（封面 URL 留空）。同时持久化到磁盘。
+     * <p>磁盘写入在锁外执行（持锁仅覆盖内存更新），避免写盘阻塞并发读。</p>
      */
-    synchronized void putLyrics(String sourceAppId, String title, String artist,
-                                List<LyricItem> lyrics) {
+    void putLyrics(String sourceAppId, String title, String artist,
+                   List<LyricItem> lyrics) {
         if (lyrics == null || lyrics.isEmpty()) return;
         CacheKey key = new CacheKey(sourceAppId, title, artist);
-        CacheEntry existing = map.get(key);
-        if (existing != null) {
-            existing.lyrics = new ArrayList<>(lyrics);
-            existing.createdAt = System.currentTimeMillis();
-        } else {
-            map.put(key, new CacheEntry(new ArrayList<>(lyrics), "",
-                    System.currentTimeMillis()));
+        CacheEntry snapshot;
+        synchronized (this) {
+            CacheEntry existing = map.get(key);
+            if (existing != null) {
+                existing.lyrics = new ArrayList<>(lyrics);
+                existing.createdAt = System.currentTimeMillis();
+            } else {
+                map.put(key, new CacheEntry(new ArrayList<>(lyrics), "",
+                        System.currentTimeMillis()));
+            }
+            CacheEntry cur = map.get(key);
+            snapshot = new CacheEntry(cur.lyrics, cur.coverUrl, cur.createdAt);
         }
-        writeToDisk(key, map.get(key));
+        writeToDisk(key, snapshot);
     }
 
     /**
      * 将封面 URL 存入缓存。若已有相同键的条目则更新封面并刷新 TTL；
      * 否则新建条目（歌词留空）。同时持久化到磁盘。
+     * <p>磁盘写入在锁外执行（持锁仅覆盖内存更新），避免写盘阻塞并发读。</p>
      */
-    synchronized void putCoverUrl(String sourceAppId, String title, String artist,
-                                  String coverUrl) {
+    void putCoverUrl(String sourceAppId, String title, String artist,
+                     String coverUrl) {
         if (coverUrl == null || coverUrl.isEmpty()) return;
         CacheKey key = new CacheKey(sourceAppId, title, artist);
-        CacheEntry existing = map.get(key);
-        if (existing != null) {
-            existing.coverUrl = coverUrl;
-            existing.createdAt = System.currentTimeMillis();
-        } else {
-            map.put(key, new CacheEntry(Collections.emptyList(), coverUrl,
-                    System.currentTimeMillis()));
+        CacheEntry snapshot;
+        synchronized (this) {
+            CacheEntry existing = map.get(key);
+            if (existing != null) {
+                existing.coverUrl = coverUrl;
+                existing.createdAt = System.currentTimeMillis();
+            } else {
+                map.put(key, new CacheEntry(Collections.emptyList(), coverUrl,
+                        System.currentTimeMillis()));
+            }
+            CacheEntry cur = map.get(key);
+            snapshot = new CacheEntry(cur.lyrics, cur.coverUrl, cur.createdAt);
         }
-        writeToDisk(key, map.get(key));
+        writeToDisk(key, snapshot);
     }
 
     /** 清空内存缓存（磁盘不受影响，下次请求会从磁盘 L2 回填）。 */

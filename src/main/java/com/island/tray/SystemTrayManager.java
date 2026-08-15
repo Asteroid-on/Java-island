@@ -30,6 +30,11 @@ public class SystemTrayManager {
     private AWTEventListener globalClickListener; // 全局鼠标监听：点击菜单外部时自动关闭菜单
     private SettingsDialog settingsDialog; // 设置窗口唯一实例（单例激活语义）
 
+    /** 主岛显示/隐藏动画唯一定时器（EDT 上创建/停止）：重复触发去重，反向触发先终止旧动画 */
+    private javax.swing.Timer showHideAnimTimer;
+    private volatile boolean showHideAnimRunning = false;
+    private volatile boolean showHideAnimToVisible = false;
+
     /** 菜单字体（黑体，13pt） */
     private static final Font MENU_FONT = new Font("SimHei", Font.PLAIN, 13);
 
@@ -52,7 +57,7 @@ public class SystemTrayManager {
         Image image = createDefaultIcon();
 
         // 不使用 AWT PopupMenu（原生渲染中文乱码），改用 Swing JPopupMenu
-        trayIcon = new TrayIcon(image, service.getConfig().title, null);
+        trayIcon = new TrayIcon(image, "云隙泡(Java-island)", null);
         trayIcon.setImageAutoSize(true);
 
         trayIcon.addMouseListener(new MouseAdapter() {
@@ -371,7 +376,20 @@ public class SystemTrayManager {
         }
     }
 
+    /**
+     * 创建托盘图标。优先加载资源中的原图标（favicon 原图，128px），
+     * 资源缺失时回退到代码绘制的胶囊形状。
+     */
     private Image createDefaultIcon() {
+        try {
+            ImageIcon icon = new ImageIcon(getClass().getResource("/icons/tray-icon.png"));
+            if (icon.getIconWidth() > 0 && icon.getIconHeight() > 0) {
+                return icon.getImage();
+            }
+        } catch (Exception e) {
+            AppLogger.warn("SystemTray", "加载托盘图标失败，回退到代码绘制", e);
+        }
+
         int size = 32;
         BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g2d = image.createGraphics();
@@ -479,7 +497,9 @@ public class SystemTrayManager {
                         // 逻辑：鼠标靠近上边框或在岛上时显示，否则隐藏
                         if ((isNearTopEdge || isMouseOverIsland) &&
                             service.getState() == IslandState.HIDDEN) {
-                            System.out.println("鼠标靠近上边框或在岛上，显示云隙泡");
+                            if (AppConstants.DEBUG_CONSOLE) {
+                                System.out.println("鼠标靠近上边框或在岛上，显示云隙泡");
+                            }
                             // 立即恢复时间/日期标签，消除显示延迟
                             SwingUtilities.invokeLater(() -> islandWindow.restoreTimeDisplay());
                             service.show();
@@ -487,7 +507,9 @@ public class SystemTrayManager {
                         } else if (!isNearTopEdge && !isMouseOverIsland &&
                                    service.getState() == IslandState.VISIBLE &&
                                    !islandWindow.isShowingNotification()) {
-                            System.out.println("鼠标离开触发区域和岛，隐藏云隙泡");
+                            if (AppConstants.DEBUG_CONSOLE) {
+                                System.out.println("鼠标离开触发区域和岛，隐藏云隙泡");
+                            }
                             service.hide();
                             animateHide();
                         }
@@ -505,21 +527,73 @@ public class SystemTrayManager {
         }
     }
 
+    /** 显示动画（线程安全：内部切 EDT 执行，重复触发去重，反向触发自动接续） */
     public void animateShow() {
+        startShowHideAnimation(true);
+    }
+
+    /** 隐藏动画（线程安全：内部切 EDT 执行，重复触发去重，反向触发自动接续） */
+    public void animateHide() {
+        startShowHideAnimation(false);
+    }
+
+    /**
+     * 主岛显示/隐藏动画统一入口。修复双 Timer 互搏与状态脱钩：
+     * - 相同方向动画进行中：忽略重复触发（消除 100ms 鼠标巡检/托盘连点动画风暴）；
+     * - 反向动画进行中：先终止旧动画，从当前实际几何状态反向接续；
+     * - 动画完成回调统一对齐 service 状态机（SHOWING→VISIBLE / HIDING→HIDDEN）。
+     */
+    private void startShowHideAnimation(boolean toVisible) {
+        SwingUtilities.invokeLater(() -> {
+            if (showHideAnimRunning && showHideAnimToVisible == toVisible) {
+                return;
+            }
+            stopShowHideAnimation();
+            showHideAnimRunning = true;
+            showHideAnimToVisible = toVisible;
+            if (toVisible) {
+                runShowAnimation();
+            } else {
+                runHideAnimation();
+            }
+        });
+    }
+
+    private void stopShowHideAnimation() {
+        if (showHideAnimTimer != null) {
+            showHideAnimTimer.stop();
+            showHideAnimTimer = null;
+        }
+        showHideAnimRunning = false;
+    }
+
+    private void runShowAnimation() {
         Point location = calculateIslandLocation();
         int targetWidth = AppConstants.DEFAULT_WIDTH;
         int targetHeight = AppConstants.DEFAULT_HEIGHT;
         int ballSize = AppConstants.BALL_SIZE;
 
-        System.out.println("开始展开动画，目标位置: " + location);
+        // 已完整显示：仅对齐状态（含历史脱钩自愈），不重复播放动画
+        if (islandWindow.isVisible()
+                && islandWindow.getWidth() == targetWidth
+                && islandWindow.getHeight() == targetHeight) {
+            service.show();
+            service.onAnimationComplete();
+            showHideAnimRunning = false;
+            return;
+        }
+
+        if (AppConstants.DEBUG_CONSOLE) {
+            System.out.println("开始展开动画，目标位置: " + location);
+        }
 
         // 第一阶段：从小球开始（完全隐藏在顶部）
-        islandWindow.setLocation(location.x + (targetWidth - ballSize) / 2, location.y - ballSize);
-        islandWindow.setSize(ballSize, ballSize);
+        islandWindow.setBounds(location.x + (targetWidth - ballSize) / 2,
+                location.y - ballSize, ballSize, ballSize);
         islandWindow.setVisible(true);
+        islandWindow.setHiding(false);
         islandWindow.toFront();
 
-        // 使用定时器实现两阶段动画 - 120fps极致帧率
         javax.swing.Timer timer = new javax.swing.Timer(AppConstants.ANIMATION_FRAME_INTERVAL, null);
         final int[] phase = {0}; // 0=向下移动, 1=展开
         final double[] progress = {0.0};
@@ -539,7 +613,8 @@ public class SystemTrayManager {
                 double eased = AnimationUtil.linear(progress[0]);
                 int currentY = (int)(location.y - ballSize + (ballSize * eased));
 
-                islandWindow.setLocation(location.x + (targetWidth - ballSize) / 2, currentY);
+                islandWindow.setBounds(location.x + (targetWidth - ballSize) / 2,
+                        currentY, ballSize, ballSize);
                 islandWindow.repaint();
 
             } else if (phase[0] == 1) {
@@ -558,34 +633,48 @@ public class SystemTrayManager {
                 int newX = location.x + (targetWidth - currentWidth) / 2;
                 int newY = location.y + (targetHeight - currentHeight) / 2;
 
-                islandWindow.setSize(currentWidth, currentHeight);
-                islandWindow.setLocation(newX, newY);
+                islandWindow.setBounds(newX, newY, currentWidth, currentHeight);
                 islandWindow.repaint();
 
                 if (progress[0] >= 1.0) {
                     timer.stop();
-                    islandWindow.setSize(targetWidth, targetHeight);
-                    islandWindow.setLocation(location.x, location.y);
+                    showHideAnimTimer = null;
+                    islandWindow.setBounds(location.x, location.y, targetWidth, targetHeight);
+                    service.show();
                     service.onAnimationComplete();
-                    System.out.println("动画完成");
+                    showHideAnimRunning = false;
+                    if (AppConstants.DEBUG_CONSOLE) {
+                        System.out.println("动画完成");
+                    }
                 }
             }
         });
+        showHideAnimTimer = timer;
         timer.setInitialDelay(0);
         timer.start();
     }
 
-    public void animateHide() {
+    private void runHideAnimation() {
+        // 已隐藏：对齐状态（HIDING→HIDDEN，兼容历史脱钩残留），不播放动画
+        if (!islandWindow.isVisible()) {
+            service.hide();
+            service.onAnimationComplete();
+            showHideAnimRunning = false;
+            return;
+        }
+
+        int ballSize = AppConstants.BALL_SIZE;
         Point currentLocation = islandWindow.getLocation();
         int currentWidth = islandWindow.getWidth();
         int currentHeight = islandWindow.getHeight();
-        int ballSize = AppConstants.BALL_SIZE;
 
         // 捕获岛屿当前实际中心点，避免每帧重算导致中心漂移
         int centerX = currentLocation.x + currentWidth / 2;
         int centerY = currentLocation.y + currentHeight / 2;
 
-        System.out.println("开始收缩动画，中心点: (" + centerX + ", " + centerY + ")");
+        if (AppConstants.DEBUG_CONSOLE) {
+            System.out.println("开始收缩动画，中心点: (" + centerX + ", " + centerY + ")");
+        }
 
         javax.swing.Timer timer = new javax.swing.Timer(AppConstants.ANIMATION_FRAME_INTERVAL, null);
         final int[] phase = {0}; // 0=收束成球, 1=向上移动
@@ -603,18 +692,14 @@ public class SystemTrayManager {
 
                 double eased = AnimationUtil.linear(progress[0]);
 
-                int newWidth = (int)(currentWidth - (currentWidth - ballSize) * eased);
-                int newHeight = (int)(currentHeight - (currentHeight - ballSize) * eased);
-
-                if (newWidth < ballSize) newWidth = ballSize;
-                if (newHeight < ballSize) newHeight = ballSize;
+                int newWidth = Math.max(ballSize, (int)(currentWidth - (currentWidth - ballSize) * eased));
+                int newHeight = Math.max(ballSize, (int)(currentHeight - (currentHeight - ballSize) * eased));
 
                 // 保持岛屿实际中心点不变，确保左右等速收缩
                 int newX = centerX - newWidth / 2;
                 int newY = centerY - newHeight / 2;
 
-                islandWindow.setSize(newWidth, newHeight);
-                islandWindow.setLocation(newX, newY);
+                islandWindow.setBounds(newX, newY, newWidth, newHeight);
                 islandWindow.repaint();
 
                 if (progress[0] >= 1.0) {
@@ -635,18 +720,27 @@ public class SystemTrayManager {
                 int targetY = location.y - ballSize;
                 int currentY = (int)(location.y + (targetY - location.y) * eased);
 
-                islandWindow.setLocation(location.x + (AppConstants.DEFAULT_WIDTH - ballSize) / 2, currentY);
+                islandWindow.setBounds(location.x + (AppConstants.DEFAULT_WIDTH - ballSize) / 2,
+                        currentY, ballSize, ballSize);
                 islandWindow.repaint();
 
                 if (progress[0] >= 1.0) {
                     timer.stop();
+                    showHideAnimTimer = null;
                     islandWindow.setVisible(false);
                     islandWindow.setHiding(false);
+                    // 通知收尾标志复位（通知结束路径走 animateHide 收尾时由该钩子复位）
+                    islandWindow.onTrayHideAnimationFinished();
+                    service.hide();
                     service.onAnimationComplete();
-                    System.out.println("隐藏完成");
+                    showHideAnimRunning = false;
+                    if (AppConstants.DEBUG_CONSOLE) {
+                        System.out.println("隐藏完成");
+                    }
                 }
             }
         });
+        showHideAnimTimer = timer;
         timer.setInitialDelay(0);
         timer.start();
     }
@@ -654,6 +748,9 @@ public class SystemTrayManager {
     public void dispose() {
         // 关闭弹出菜单
         hidePopup();
+
+        // 终止进行中的显示/隐藏动画，避免动画 Timer 在窗口销毁后继续驱动 EDT
+        stopShowHideAnimation();
 
         // 注销全局鼠标监听
         if (globalClickListener != null) {

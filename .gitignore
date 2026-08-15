@@ -55,6 +55,10 @@ QQMusicapi/
 
 ### Cache ###
 cache/
+.node-cache/
+
+### 生成产物（可由脚本重新生成） ###
+app-icon.ico
 
 ### 外部服务密钥配置（不入库；缺失时天气自动降级 Open-Meteo）###
 src/main/resources/config.properties

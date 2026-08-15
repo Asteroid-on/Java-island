@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
@@ -11,7 +12,17 @@ class Program
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
 
     static readonly string PosFile = Path.Combine(Path.GetTempPath(), "media_info.json");
+    static readonly string ThumbFile = Path.Combine(Path.GetTempPath(), "media_thumb.bin");
     static readonly string[] Players = ["cloudmusic", "QQMusic"];
+
+    /// <summary>单实例互斥体：防止应用多次启动导致多个 daemon 并存（内存泄漏）</summary>
+    static readonly bool SingletonCreated;
+    static readonly Mutex SingletonMutex;
+
+    static Program()
+    {
+        SingletonMutex = new Mutex(true, "JavaIsland_MediaInfoDaemon_Singleton", out SingletonCreated);
+    }
 
     // SMTC SourceAppUserModelId 白名单（只检测白名单中的播放器，忽略浏览器等）
     static readonly string[] SrcWhitelist = [
@@ -42,8 +53,19 @@ class Program
     static long _cachedEndTimeTicks = 0;
     static volatile bool _timelineUpdated = false;
 
+    // ── 封面缩略图缓存：仅变化时重读 SMTC 流并写独立文件（不再内嵌 base64 进 JSON）──
+    static byte[]? _thumbBytes = null;         // 上次读取的缩略图字节（会话内缓存，避免每 500ms 重读流）
+    static string _thumbHash = "";             // 对应字节的 SHA256（前 16 字符）
+    static volatile bool _thumbDirty = true;   // 事件触发置脏，下一轮 Flush 重读缩略图
+
     static async Task Main()
     {
+        // 单实例保护：已有实例运行时直接退出，避免进程泄漏
+        if (!SingletonCreated)
+        {
+            Console.Error.WriteLine("[Daemon] 已有 MediaInfoDaemon 实例在运行，本实例退出。");
+            return;
+        }
         _hasProc = ScanProc();  // 初始化时立即扫描，避免事件触发的 Flush 拿到 false
         _last = """{"hasSession":false,"hasMusicProcess":false}""";
         Write(_last);
@@ -56,6 +78,7 @@ class Program
     static void OnChanged(GlobalSystemMediaTransportControlsSession s, object e)
     {
         _hasProc = ScanProc();  // 事件触发时立即更新进程检测
+        _thumbDirty = true;     // 媒体属性/播放信息变化 → 缩略图可能变化，置脏待重读
         _ = Task.Run(Flush);
     }
 
@@ -246,7 +269,9 @@ class Program
             {
                 var mp = await _s.TryGetMediaPropertiesAsync();
                 t = Esc(mp.Title); a = Esc(mp.Artist); al = Esc(mp.AlbumTitle);
-                if (mp.Thumbnail != null) try
+            if (mp.Thumbnail != null) try
+            {
+                if (_thumbDirty)
                 {
                     var sm = await mp.Thumbnail.OpenReadAsync();
                     if (sm.Size > 0 && sm.Size < 1_048_576)
@@ -255,9 +280,25 @@ class Program
                         await dr.LoadAsync((uint)sm.Size);
                         var b = new byte[sm.Size];
                         dr.ReadBytes(b);
-                        th = Convert.ToBase64String(b);
+                        string h = Convert.ToHexString(SHA256.HashData(b)).Substring(0, 16);
+                        if (!h.Equals(_thumbHash, StringComparison.Ordinal))
+                        {
+                            _thumbBytes = b;
+                            _thumbHash = h;
+                            WriteBytes(ThumbFile, b);
+                            Console.Error.WriteLine($"[Daemon] 封面已更新: {b.Length} 字节 hash={h}");
+                        }
                     }
-                } catch { }
+                    else
+                    {
+                        _thumbBytes = null;
+                        _thumbHash = "";
+                    }
+                    _thumbDirty = false;
+                }
+            } catch { }
+            if (_thumbBytes != null) { th = _thumbHash; }
+            else { _thumbBytes = null; _thumbHash = ""; _thumbDirty = false; }
             } catch { }
             try { var pb = _s.GetPlaybackInfo(); if (pb != null) st = pb.PlaybackStatus.ToString(); } catch { }
 
@@ -392,6 +433,9 @@ class Program
             _lastSrcAppId = "";
             _lastTrackId = "";
             _zeroPositionCount = 0;
+            _thumbBytes = null;                   // 会话丢失 → 清空封面缓存
+            _thumbHash = "";
+            _thumbDirty = true;
         }
         // hasSession: 白名单 + 进程运行 + 有歌名
         bool hs = !string.IsNullOrEmpty(t) && IsSourceWhitelistedAndRunning(src);
@@ -407,7 +451,9 @@ class Program
         sb.Append("\"positionTicks\":").Append(p).Append(",");
         sb.Append("\"endTimeTicks\":").Append(e).Append(",");
         sb.Append("\"sourceAppId\":\"").Append(Esc(src)).Append("\",");
-        sb.Append("\"thumbnail\":\"").Append(th).Append("\",");
+        sb.Append("\"thumbnail\":\"\",");
+        sb.Append("\"thumbFile\":\"").Append(_thumbBytes != null ? "media_thumb.bin" : "").Append("\",");
+        sb.Append("\"thumbHash\":\"").Append(th).Append("\",");
         sb.Append("\"isMinimized\":").Append(minimized ? "true" : "false");
         sb.Append("}");
         return sb.ToString();
@@ -418,6 +464,14 @@ class Program
             var tmp = PosFile + ".tmp";
             File.WriteAllText(tmp, c, new UTF8Encoding(false));
             File.Move(tmp, PosFile, true);
+        } catch { }
+    }
+
+    static void WriteBytes(string path, byte[] data) {
+        try {
+            var tmp = path + ".tmp";
+            File.WriteAllBytes(tmp, data);
+            File.Move(tmp, path, true);
         } catch { }
     }
     static string Esc(string? s) => string.IsNullOrEmpty(s) ? "" : s.Replace("\\","\\\\").Replace("\"","\\\"").Replace("\n","\\n").Replace("\r","\\r");

@@ -315,7 +315,7 @@ public class SettingsDialog extends JDialog {
         p.add(sectionCard("应用信息", new Component[]{
             infoLine("应用名称", "云隙泡（Java-Island）"),
             Box.createVerticalStrut(6),
-            infoLine("版本", "1.0-SNAPSHOT"),
+            infoLine("版本", "1.0"),
             Box.createVerticalStrut(6),
             infoLine("Java", System.getProperty("java.version")),
         }));
@@ -890,7 +890,7 @@ public class SettingsDialog extends JDialog {
         body.append(System.lineSeparator())
                 .append("日志目录：").append(Path.of(AppConstants.getLogDir()).toAbsolutePath())
                 .append(System.lineSeparator())
-                .append("应用版本：1.0-SNAPSHOT")
+                .append("应用版本：1.0")
                 .append(System.lineSeparator())
                 .append("Java：").append(System.getProperty("java.version"));
         String text = body.toString();
@@ -921,7 +921,7 @@ public class SettingsDialog extends JDialog {
         body.append(System.lineSeparator()).append(System.lineSeparator())
                 .append("### 环境信息").append(System.lineSeparator())
                 .append(System.lineSeparator())
-                .append("- 应用版本：1.0-SNAPSHOT").append(System.lineSeparator())
+                .append("- 应用版本：1.0").append(System.lineSeparator())
                 .append("- Java：").append(System.getProperty("java.version"))
                 .append(System.lineSeparator())
                 .append("- 日志目录：").append(Path.of(AppConstants.getLogDir()).toAbsolutePath());

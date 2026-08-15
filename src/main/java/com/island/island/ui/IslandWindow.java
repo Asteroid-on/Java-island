@@ -2,6 +2,7 @@ package com.island.island.ui;
 
 import com.island.battery.BatteryMonitor;
 import com.island.bluetooth.BluetoothMonitor;
+import com.island.config.AppConstants;
 import com.island.island.model.IslandConfig;
 import com.island.island.service.DynamicIslandService;
 import com.island.island.service.impl.DynamicIslandServiceImpl;
@@ -75,6 +76,8 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
     private Timer clockTimer;
     private transient BluetoothMonitor bluetoothMonitor;
     private Timer notificationTimer;
+    /** 通知收尾一次性定时器（持有引用：新通知到来或窗口销毁时能及时取消，避免旧定时器误收新通知） */
+    private Timer finishNotificationTimer;
     private volatile boolean showingNotification = false;
     private volatile boolean showingWifiNotification = false;
     private transient SystemTrayManager trayManager;
@@ -129,7 +132,10 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
             AppLogger.error("IslandWindow", "MediaInfoDaemon 未运行，音乐监控将无数据");
         }
         monitor.setListener(info -> {
-            System.out.println("[IslandWindow] MusicMonitor 回调: " + info);
+            // 高频回调（播放期间每 300ms 一次）：默认关闭输出，需诊断时用 -Disland.debug=true 开启
+            if (AppConstants.DEBUG_CONSOLE) {
+                System.out.println("[IslandWindow] MusicMonitor 回调: " + info);
+            }
             SwingUtilities.invokeLater(() -> expandedController.onMusicInfoChanged(info));
         });
         monitor.start();
@@ -587,6 +593,12 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
                 notificationTimer.stop();
             }
 
+            // 取消上一个通知的收尾定时器：蓝牙+WiFi 连续通知时防止旧收尾把新通知的岛提前隐藏
+            if (finishNotificationTimer != null) {
+                finishNotificationTimer.stop();
+                finishNotificationTimer = null;
+            }
+
             if (weatherPanel != null) {
                 SwingUtilities.invokeLater(() -> {
                     weatherPanel.setVisible(false);
@@ -649,7 +661,7 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
                     animPanel.setVisible(false);
                 });
 
-                Timer fontSwitchTimer = new Timer(IslandUiStyle.ANIM_FRAME_MS * 2, switchTask -> {
+                finishNotificationTimer = new Timer(IslandUiStyle.ANIM_FRAME_MS * 2, switchTask -> {
                     isFinishingNotification = true;
                     isHiding = true;
                     service.hide();
@@ -669,21 +681,18 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
                                 showingNotification = false;
                                 isNotificationActive = false;
                             }
+                            // isFinishingNotification/isHiding 由 hide 动画完成回调统一复位，
+                            // 修复此前托盘路径标志永不复位导致时钟停更/文字可见性异常的缺陷
                         } else {
                             setVisible(false);
-                            isFinishingNotification = false;
-                            isHiding = false;
-                            synchronized (notificationLock) {
-                                showingNotification = false;
-                                isNotificationActive = false;
-                            }
+                            onNotificationFinished();
                         }
                     });
 
-                    ((Timer) switchTask.getSource()).stop();
+                    finishNotificationTimer = null;
                 });
-                fontSwitchTimer.setRepeats(false);
-                fontSwitchTimer.start();
+                finishNotificationTimer.setRepeats(false);
+                finishNotificationTimer.start();
             });
             notificationTimer.setRepeats(false);
             notificationTimer.start();
@@ -742,6 +751,22 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
         animProgress = 0f;
     }
 
+    /** 通知收尾统一复位：显示/隐藏/通知状态标志全部复位（无托盘分支直接调用） */
+    private void onNotificationFinished() {
+        isFinishingNotification = false;
+        isHiding = false;
+        synchronized (notificationLock) {
+            showingNotification = false;
+            isNotificationActive = false;
+        }
+    }
+
+    /** 托盘管理器 hide 动画完成回调：复位通知收尾标志（通知锁状态由通知流程自行维护） */
+    public void onTrayHideAnimationFinished() {
+        isFinishingNotification = false;
+        isHiding = false;
+    }
+
     private void panelRelayout() {
         Container c = getContentPane();
         if (c.getComponentCount() > 0) {
@@ -757,10 +782,6 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
         if (textPanel != null) {
             updateTextVisibility();
         }
-
-        SwingUtilities.invokeLater(() -> {
-            isAnimating = false;
-        });
     }
 
     @Override
@@ -771,10 +792,6 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
         if (textPanel != null) {
             updateTextVisibility();
         }
-
-        SwingUtilities.invokeLater(() -> {
-            isAnimating = false;
-        });
     }
 
     private void updateTextVisibility() {
@@ -833,6 +850,11 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
             if (notificationTimer != null) {
                 notificationTimer.stop();
                 notificationTimer = null;
+            }
+
+            if (finishNotificationTimer != null) {
+                finishNotificationTimer.stop();
+                finishNotificationTimer = null;
             }
 
             if (animTimer != null) {

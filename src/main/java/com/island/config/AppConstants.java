@@ -27,6 +27,12 @@ public final class AppConstants {
     /** 触发距离：鼠标距离上边框50px时触发 */
     public static final int TRIGGER_DISTANCE = 8;
 
+    /**
+     * 高频调试输出开关（-Disland.debug=true 开启）。
+     * 默认关闭：避免播放期间每 300ms 的轮询回调/歌词进度日志造成控制台 I/O 压力。
+     */
+    public static final boolean DEBUG_CONSOLE = Boolean.getBoolean("island.debug");
+
     /** 隐藏检测间隔：100ms */
     public static final int HIDE_CHECK_INTERVAL = 100;
 
@@ -254,14 +260,24 @@ public final class AppConstants {
      * @return node.exe 的绝对路径，找不到返回 {@code null}
      */
     public static String findNodeExecutable() {
-        // 0. 环境变量 NODE_PATH
+        // 0. jpackage 打包环境：优先使用 exe 同目录下捆绑的 node\node.exe
+        String packagedApp = System.getProperty("jpackage.app-path");
+        if (packagedApp != null && !packagedApp.isBlank()) {
+            File exeDir = new File(packagedApp).getParentFile();
+            if (exeDir != null) {
+                File bundled = new File(exeDir, "node" + File.separator + "node.exe");
+                if (bundled.exists()) return bundled.getAbsolutePath();
+            }
+        }
+
+        // 1. 环境变量 NODE_PATH
         String nodePath = System.getenv("NODE_PATH");
         if (nodePath != null) {
             File f = new File(nodePath, "node.exe");
             if (f.exists()) return f.getAbsolutePath();
         }
 
-        // 1. PATH 搜索
+        // 2. PATH 搜索
         String pathEnv = System.getenv("PATH");
         if (pathEnv != null) {
             for (String dir : pathEnv.split(File.pathSeparator)) {
@@ -270,7 +286,7 @@ public final class AppConstants {
             }
         }
 
-        // 2. 常见安装位置
+        // 3. 常见安装位置
         String[] candidates = {
                 System.getenv("ProgramFiles") + "\\nodejs\\node.exe",
                 System.getenv("ProgramFiles(x86)") + "\\nodejs\\node.exe",

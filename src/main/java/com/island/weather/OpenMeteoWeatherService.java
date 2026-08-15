@@ -27,6 +27,10 @@ public class OpenMeteoWeatherService {
     // Open-Meteo API基础URL
     private static final String OPEN_METEO_API_URL = "https://api.open-meteo.com/v1/forecast";
 
+    /** 共享 HTTP 客户端（避免每次请求新建连接池/线程） */
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10)).build();
+
     public interface WeatherListener {
         void onWeatherUpdated(WeatherInfo weather);
         void onWeatherError(String error);
@@ -92,10 +96,8 @@ public class OpenMeteoWeatherService {
                 "&timezone=Asia/Shanghai",
                 OPEN_METEO_API_URL, location.latitude, location.longitude);
 
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(10))
-                    .build();
-            
+            HttpClient client = HTTP;
+
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(apiUrl))
                     .timeout(Duration.ofSeconds(30))
@@ -156,9 +158,7 @@ public class OpenMeteoWeatherService {
                 "https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=%.6f&longitude=%.6f&localityLanguage=zh",
                 lat, lon);
 
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(5))
-                    .build();
+            HttpClient client = HTTP;
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(apiUrl))

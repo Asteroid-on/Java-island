@@ -10,14 +10,27 @@ import com.island.util.AppLogger;
 import com.island.util.WindowsTheme;
 import com.formdev.flatlaf.FlatDarkLaf;
 import com.formdev.flatlaf.FlatLightLaf;
+import com.sun.jna.Library;
+import com.sun.jna.Native;
+import com.sun.jna.win32.W32APIOptions;
 
 import javax.swing.*;
 import java.awt.*;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 云隙泡应用启动类。
@@ -39,7 +52,25 @@ public class IslandApplication {
 
     private static ServerSocket instanceLock;
 
+    /** 由本应用拉起的守护进程，退出时统一回收（防进程泄漏） */
+    private static final List<Process> STARTED_DAEMONS = new ArrayList<>();
+
+    /** winmm 高精度定时器：把 Swing 动画帧率从 Windows 默认 15.6ms 粒度恢复到设计值 */
+    private interface Winmm extends Library {
+        Winmm INSTANCE = Native.load("winmm", Winmm.class, W32APIOptions.DEFAULT_OPTIONS);
+        int timeBeginPeriod(int periodMs);
+        int timeEndPeriod(int periodMs);
+    }
+
     public static void main(String[] args) {
+        // ── 0. 启用 1ms 系统定时器粒度（动画帧率优化；退出时由关闭钩子恢复）──
+        enableHighResolutionTimer();
+
+        // ── 0.5 EDT 延迟探针（-Disland.edtProbe=true 开启，默认关闭零开销）──
+        if (Boolean.getBoolean("island.edtProbe")) {
+            startEdtLatencyProbe();
+        }
+
         // ── 1. 单实例锁 ──
         if (!acquireInstanceLock()) {
             AppLogger.warn("IslandApplication", "已有实例在运行，退出。");
@@ -124,8 +155,94 @@ public class IslandApplication {
         // ── JVM 关闭钩子 ──
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             releaseInstanceLock();
+            destroyStartedDaemons();
+            disableHighResolutionTimer();
             AppLogger.info("IslandApplication", "应用已退出。");
         }));
+    }
+
+    // ═══════════════════════════════════════════
+    //  高精度定时器（动画帧率优化）
+    // ═══════════════════════════════════════════
+
+    /** 高精度定时器周期重申调度器（待机恢复后系统定时器粒度可能回退为 15.6ms） */
+    private static ScheduledExecutorService hiResTimerKeeper;
+
+    private static void enableHighResolutionTimer() {
+        try {
+            Winmm.INSTANCE.timeBeginPeriod(1);
+        } catch (Throwable t) {
+            AppLogger.warn("IslandApplication", "启用高精度定时器失败: " + t.getMessage());
+        }
+        // 周期重申：timeBeginPeriod 幂等且开销极小，覆盖"系统待机恢复后定时器粒度回退"场景
+        hiResTimerKeeper = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "HiResTimerKeeper");
+            t.setDaemon(true);
+            return t;
+        });
+        hiResTimerKeeper.scheduleWithFixedDelay(() -> {
+            try {
+                Winmm.INSTANCE.timeBeginPeriod(1);
+            } catch (Throwable ignored) {
+            }
+        }, 30, 30, TimeUnit.SECONDS);
+    }
+
+    private static void disableHighResolutionTimer() {
+        if (hiResTimerKeeper != null) {
+            hiResTimerKeeper.shutdownNow();
+            hiResTimerKeeper = null;
+        }
+        try {
+            Winmm.INSTANCE.timeEndPeriod(1);
+        } catch (Throwable ignored) { }
+    }
+
+    // ═══════════════════════════════════════
+    //  EDT 延迟探针（验证用埋点，-Disland.edtProbe=true 开启）
+    // ═══════════════════════════════════════
+
+    /**
+     * 每 250ms 向 EDT 投递一个空任务并测量派发延迟，每 60 秒输出 p50/p99/max。
+     * 用于验证长时间运行与待机恢复后 EDT 无任务堆积（p99 持续 < 50ms 视为健康）。
+     */
+    private static void startEdtLatencyProbe() {
+        ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "EdtLatencyProbe");
+            t.setDaemon(true);
+            return t;
+        });
+        exec.submit(() -> {
+            long[] samples = new long[1024];
+            int idx = 0;
+            long windowStart = System.currentTimeMillis();
+            while (true) {
+                try {
+                    long posted = System.nanoTime();
+                    CountDownLatch latch = new CountDownLatch(1);
+                    SwingUtilities.invokeLater(latch::countDown);
+                    if (!latch.await(5, TimeUnit.SECONDS)) {
+                        AppLogger.warn("EdtProbe", "EDT 任务 5 秒未被派发！");
+                        continue;
+                    }
+                    samples[idx++ % samples.length] = (System.nanoTime() - posted) / 1_000_000;
+                    long now = System.currentTimeMillis();
+                    if (now - windowStart >= 60_000 && idx > 0) {
+                        int n = Math.min(idx, samples.length);
+                        long[] sorted = Arrays.copyOf(samples, n);
+                        Arrays.sort(sorted);
+                        AppLogger.info("EdtProbe", String.format(Locale.ROOT,
+                                "60s窗口 EDT派发延迟 n=%d p50=%dms p99=%dms max=%dms",
+                                n, sorted[n / 2], sorted[(int) (n * 0.99)], sorted[n - 1]));
+                        idx = 0;
+                        windowStart = now;
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        });
     }
 
     // ═══════════════════════════════════════════
@@ -177,57 +294,41 @@ public class IslandApplication {
         // ── MediaInfoDaemon (.NET 8 SMTC 媒体信息守护进程) ──
         File daemonExe = new File(baseDir, "MediaInfoDaemon.exe");
         if (daemonExe.exists()) {
-            try {
-                new ProcessBuilder(daemonExe.getAbsolutePath())
-                        .directory(new File(baseDir))
-                        .redirectErrorStream(true)
-                        .redirectOutput(ProcessBuilder.Redirect.appendTo(
-                                new File(baseDir, "daemon.log")))
-                        .start();
-                AppLogger.info("IslandApplication", "MediaInfoDaemon 已启动");
-            } catch (IOException e) {
-                AppLogger.error("IslandApplication", "MediaInfoDaemon 启动失败", e);
+            if (isProcessRunning("MediaInfoDaemon")) {
+                AppLogger.info("IslandApplication", "MediaInfoDaemon 已在运行，跳过启动");
+            } else {
+                startDaemon(new ProcessBuilder(daemonExe.getAbsolutePath())
+                        .directory(new File(baseDir)), "MediaInfoDaemon", baseDir);
             }
         } else {
             AppLogger.error("IslandApplication", "MediaInfoDaemon.exe 未找到: "
                     + daemonExe.getAbsolutePath());
         }
 
-        // ── ncm-server (网易云 API 代理) ──
+        // ── ncm-server (网易云 API 代理，默认端口 3000) ──
         File ncmExe = new File(baseDir, "ncm-server.exe");
         if (ncmExe.exists()) {
-            try {
-                new ProcessBuilder(ncmExe.getAbsolutePath())
-                        .directory(new File(baseDir))
-                        .redirectErrorStream(true)
-                        .redirectOutput(ProcessBuilder.Redirect.appendTo(
-                                new File(baseDir, "daemon.log")))
-                        .start();
-                AppLogger.info("IslandApplication", "ncm-server 已启动");
-            } catch (IOException e) {
-                AppLogger.error("IslandApplication", "ncm-server 启动失败", e);
+            if (isPortInUse(3000)) {
+                AppLogger.info("IslandApplication", "ncm-server 已在运行（端口 3000），跳过启动");
+            } else {
+                startDaemon(new ProcessBuilder(ncmExe.getAbsolutePath())
+                        .directory(new File(baseDir)), "ncm-server", baseDir);
             }
         } else {
             AppLogger.error("IslandApplication", "ncm-server.exe 未找到: "
                     + ncmExe.getAbsolutePath());
         }
 
-        // ── qqmusic-api (QQ音乐 API 代理) ──
+        // ── qqmusic-api (QQ音乐 API 代理，端口 3300) ──
         String nodeExe = AppConstants.findNodeExecutable();
         File qqmusicDir = new File(baseDir, "QQMusicapi");
         File serverJs = new File(qqmusicDir, "src" + File.separator + "server.js");
         if (nodeExe != null && qqmusicDir.isDirectory() && serverJs.exists()) {
-            try {
-                new ProcessBuilder(nodeExe, "src" + File.separator + "server.js")
-                        .directory(qqmusicDir)
-                        .redirectErrorStream(true)
-                        .redirectOutput(ProcessBuilder.Redirect.appendTo(
-                                new File(baseDir, "daemon.log")))
-                        .start();
-                AppLogger.info("IslandApplication", "qqmusic-api 已启动 (node="
-                        + nodeExe + ")");
-            } catch (IOException e) {
-                AppLogger.error("IslandApplication", "qqmusic-api 启动失败", e);
+            if (isPortInUse(3300)) {
+                AppLogger.info("IslandApplication", "qqmusic-api 已在运行（端口 3300），跳过启动");
+            } else {
+                startDaemon(new ProcessBuilder(nodeExe, "src" + File.separator + "server.js")
+                        .directory(qqmusicDir), "qqmusic-api", baseDir);
             }
         } else {
             if (nodeExe == null) {
@@ -241,10 +342,73 @@ public class IslandApplication {
     }
 
     /**
+     * 拉起守护进程并登记（输出重定向到 daemon.log），供退出时统一回收。
+     */
+    private static void startDaemon(ProcessBuilder pb, String name, String baseDir) {
+        try {
+            Process p = pb
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.appendTo(
+                            new File(baseDir, "daemon.log")))
+                    .start();
+            synchronized (STARTED_DAEMONS) {
+                STARTED_DAEMONS.add(p);
+            }
+            AppLogger.info("IslandApplication", name + " 已启动");
+        } catch (IOException e) {
+            AppLogger.error("IslandApplication", name + " 启动失败", e);
+        }
+    }
+
+    /** 退出时回收由本应用拉起的守护进程（防止进程泄漏）。 */
+    private static void destroyStartedDaemons() {
+        synchronized (STARTED_DAEMONS) {
+            for (Process p : STARTED_DAEMONS) {
+                try {
+                    if (p.isAlive()) p.destroy();
+                } catch (Exception ignored) { }
+            }
+            STARTED_DAEMONS.clear();
+        }
+    }
+
+    /** 按可执行文件名检测进程是否已在运行（无端口可查的 daemon 用）。 */
+    private static boolean isProcessRunning(String exeName) {
+        try {
+            return ProcessHandle.allProcesses().anyMatch(ph -> {
+                try {
+                    String cmd = ph.info().command().orElse("");
+                    return !cmd.isEmpty() && cmd.toLowerCase().contains(exeName.toLowerCase());
+                } catch (Exception e) {
+                    return false;
+                }
+            });
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 探测本地端口是否已被占用（有端口协议的 daemon 用，比进程名更可靠）。 */
+    private static boolean isPortInUse(int port) {
+        try (Socket s = new Socket()) {
+            s.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 300);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
      * 探测应用基准目录（JAR 所在目录或工作目录）。
      * <p>IDE 环境（target/classes）下会向上查找包含 pom.xml 的项目根目录。</p>
      */
     private static String detectBaseDir() {
+        // jpackage 打包运行：jpackage.app-path 指向应用 exe，守护进程部署在 exe 同目录
+        String packagedApp = System.getProperty("jpackage.app-path");
+        if (packagedApp != null && !packagedApp.isBlank()) {
+            File exeDir = new File(packagedApp).getParentFile();
+            if (exeDir != null) return exeDir.getAbsolutePath();
+        }
         try {
             File codeLocation = new File(
                     IslandApplication.class.getProtectionDomain()

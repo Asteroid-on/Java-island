@@ -132,10 +132,16 @@ public final class WindowsStartupManager {
      */
     private static boolean isShortcutValid() {
         try {
-            String currentJar = detectJarPath();
+            String packagedExe = getPackagedExePath();
             String target = resolveShortcutTarget(getShortcutPath());
             String arguments = resolveShortcutArguments(getShortcutPath());
             if (target == null || arguments == null) return false;
+            if (packagedExe != null) {
+                // 打包模式：快捷方式必须指向应用 exe 本身
+                return target.equalsIgnoreCase(packagedExe)
+                        && arguments.contains("--autostart");
+            }
+            String currentJar = detectJarPath();
             if (!target.toLowerCase().endsWith("javaw.exe")) return false;
             // 校验 Arguments 中是否包含当前 JAR 路径
             return arguments.contains(currentJar);
@@ -198,9 +204,15 @@ public final class WindowsStartupManager {
      * <p>携带 {@code --autostart} 参数，控件启动时区分手动/自启模式。</p>
      */
     private static void createStartupShortcut() throws Exception {
-        String javawExe = getJavawPath();
-        String jarPath = detectJarPath();
-        String workDir = new File(jarPath).getParent();
+        String packagedExe = getPackagedExePath();
+        // 打包模式：快捷方式直接指向应用 exe；开发模式：javaw -jar 启动
+        String targetExe = packagedExe != null ? packagedExe : getJavawPath();
+        String arguments = packagedExe != null
+                ? "--autostart"
+                : "-jar \"" + detectJarPath() + "\" --autostart";
+        String workDir = packagedExe != null
+                ? new File(packagedExe).getParent()
+                : new File(detectJarPath()).getParent();
 
         String lnkPath = getShortcutPath();
         // 先删除旧快捷方式，确保路径变更时能更新
@@ -216,13 +228,13 @@ public final class WindowsStartupManager {
                 "$w=New-Object -ComObject WScript.Shell;"
                         + "$s=$w.CreateShortcut('%s');"
                         + "$s.TargetPath='%s';"
-                        + "$s.Arguments='-jar \"%s\" --autostart';"
+                        + "$s.Arguments='%s';"
                         + "$s.WorkingDirectory='%s';"
                         + "$s.Description='云隙泡 (Java-Island)';"
                         + "$s.Save()",
                 escPS(lnkPath),
-                escPS(javawExe),
-                escPS(jarPath),
+                escPS(targetExe),
+                escPS(arguments),
                 escPS(workDir));
 
         Process p = new ProcessBuilder(
@@ -302,6 +314,11 @@ public final class WindowsStartupManager {
      * 并携带 {@code --autostart} 参数。
      */
     private static String buildRegistryCommand() {
+        String packagedExe = getPackagedExePath();
+        if (packagedExe != null) {
+            // 打包模式：直接以 exe 自启，不依赖 javaw -jar
+            return "\"" + packagedExe + "\" --autostart";
+        }
         String javawExe = getJavawPath();
         String jarPath = detectJarPath();
         String workDir = new File(jarPath).getParent();
@@ -316,6 +333,12 @@ public final class WindowsStartupManager {
     // ═══════════════════════════════════════════
     //  路径探测
     // ═══════════════════════════════════════════
+
+    /** jpackage 打包运行时的应用 exe 路径；开发模式（javaw -jar）返回 null。 */
+    private static String getPackagedExePath() {
+        String p = System.getProperty("jpackage.app-path");
+        return (p == null || p.isBlank()) ? null : p;
+    }
 
     private static String getJavawPath() {
         String javaHome = System.getProperty("java.home");
@@ -390,7 +413,7 @@ public final class WindowsStartupManager {
 
         // 5. 绝对兜底
         return userDir + File.separator + "target"
-                + File.separator + "Java-island-1.0-SNAPSHOT.jar";
+                + File.separator + "Java-island-1.0.jar";
     }
 
     // ═══════════════════════════════════════════

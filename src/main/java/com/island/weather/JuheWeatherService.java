@@ -32,6 +32,10 @@ public class JuheWeatherService {
     private static final String API_KEY = AppConfig.get("juhe.api.key", "");
     private static final String API_URL = "https://apis.juhe.cn/simpleWeather/query";
 
+    /** 共享 HTTP 客户端（避免每次请求新建连接池/线程） */
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10)).build();
+
 
 
     public interface WeatherListener {
@@ -82,12 +86,10 @@ public class JuheWeatherService {
             String params = String.format("key=%s&city=%s",
                     API_KEY, URLEncoder.encode(cityName, StandardCharsets.UTF_8));
 
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(10)).build();
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(API_URL + "?" + params))
                     .timeout(Duration.ofSeconds(15)).build();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
                 JSONObject json = new JSONObject(response.body());

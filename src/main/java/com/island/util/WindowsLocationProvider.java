@@ -144,6 +144,8 @@ public final class WindowsLocationProvider {
         if (!ensureExe()) return null;
         try {
             Process p = new ProcessBuilder(EXE_PATH.toAbsolutePath().toString()).start();
+            // 关闭子进程 stdin，避免管道句柄依赖 GC 回收（句柄泄漏治理）
+            try { p.getOutputStream().close(); } catch (Exception ignored) { }
             StringBuilder out = new StringBuilder(), err = new StringBuilder();
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String l; while ((l = r.readLine()) != null) out.append(l);
@@ -229,6 +231,8 @@ public final class WindowsLocationProvider {
                 );
                 pb.redirectErrorStream(true);
                 Process p = pb.start();
+                // 关闭子进程 stdin，避免管道句柄依赖 GC 回收（句柄泄漏治理）
+                try { p.getOutputStream().close(); } catch (Exception ignored) { }
                 StringBuilder compileOut = new StringBuilder();
                 try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                     String l; while ((l = r.readLine()) != null) compileOut.append(l).append('\n');

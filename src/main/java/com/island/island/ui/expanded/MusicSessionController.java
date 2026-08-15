@@ -4,6 +4,7 @@ import com.island.island.ui.IslandUiStyle;
 import com.island.music.LyricsService;
 import com.island.music.model.LyricItem;
 import com.island.music.model.MusicInfo;
+import com.island.config.AppConstants;
 import com.island.util.AppLogger;
 
 import javax.imageio.ImageIO;
@@ -128,9 +129,11 @@ class MusicSessionController {
             mp.setLyricsText(" ");
         }
 
-        System.out.println("[IslandWindow] updateMusicInfo: wasPlaying=" + wasPlaying
-                + " isPlaying=" + isPlaying + " expandedVisible=" + controller.isVisible()
-                + " srcSwitched=" + activeSourceSwitched);
+        if (AppConstants.DEBUG_CONSOLE) {
+            System.out.println("[IslandWindow] updateMusicInfo: wasPlaying=" + wasPlaying
+                    + " isPlaying=" + isPlaying + " expandedVisible=" + controller.isVisible()
+                    + " srcSwitched=" + activeSourceSwitched);
+        }
 
         // 歌词进度完全依赖 daemon 汇报的 positionTicks
 
@@ -249,9 +252,11 @@ class MusicSessionController {
         if (artist.length() > 12) artist = artist.substring(0, 11) + "...";
         mp.setArtistText(artist.isEmpty() ? "未知艺术家" : artist);
 
-        System.out.println("[IslandWindow] updateMusicPanelContent: title=" + fullTitle
-                + " artist=" + fullArtist + " hasLyrics=" + !lrcLines.isEmpty()
-                + " hasCover=" + (currentMusicInfo.getThumbnailBase64().length() > 0));
+        if (AppConstants.DEBUG_CONSOLE) {
+            System.out.println("[IslandWindow] updateMusicPanelContent: title=" + fullTitle
+                    + " artist=" + fullArtist + " hasLyrics=" + !lrcLines.isEmpty()
+                    + " hasCover=" + (currentMusicInfo.getThumbnailBase64().length() > 0));
+        }
 
         if (!lrcLines.isEmpty()) {
             updateProgressDisplay(currentMusicInfo);
@@ -307,9 +312,12 @@ class MusicSessionController {
         }
         if (end > 0 && pos > end) pos = end;
         int idx = lyricsService.findLineIndex(lrcLines, pos);
-        System.out.printf("[LyricProgress] position=%dms idx=%d/%d '%s'%n",
-                pos, idx, lrcLines.size(),
-                idx >= 0 && idx < lrcLines.size() ? lrcLines.get(idx).content : "N/A");
+        // 高频日志（播放期间每 300ms 一次）：默认关闭输出，需诊断时用 -Disland.debug=true 开启
+        if (AppConstants.DEBUG_CONSOLE) {
+            System.out.printf("[LyricProgress] position=%dms idx=%d/%d '%s'%n",
+                    pos, idx, lrcLines.size(),
+                    idx >= 0 && idx < lrcLines.size() ? lrcLines.get(idx).content : "N/A");
+        }
         if (idx != currentLyricIndex) {
             currentLyricIndex = idx;
             mp.repaintLyrics();
