@@ -7,6 +7,7 @@ import com.island.island.ui.IslandWindow;
 import com.island.music.MusicMonitor;
 import com.island.tray.SystemTrayManager;
 import com.island.util.AppLogger;
+import com.island.util.DpiUtil;
 import com.island.util.WindowsTheme;
 import com.formdev.flatlaf.FlatDarkLaf;
 import com.formdev.flatlaf.FlatLightLaf;
@@ -63,10 +64,13 @@ public class IslandApplication {
     }
 
     public static void main(String[] args) {
-        // ── 0. 启用 1ms 系统定时器粒度（动画帧率优化；退出时由关闭钩子恢复）──
+        // ── 0. 启用 Per-Monitor V2 DPI 感知（必须在创建任何窗口之前调用，否则失效）──
+        DpiUtil.enablePerMonitorDpi();
+
+        // ── 0.5 启用 1ms 系统定时器粒度（动画帧率优化；退出时由关闭钩子恢复）──
         enableHighResolutionTimer();
 
-        // ── 0.5 EDT 延迟探针（-Disland.edtProbe=true 开启，默认关闭零开销）──
+        // ── 0.6 EDT 延迟探针（-Disland.edtProbe=true 开启，默认关闭零开销）──
         if (Boolean.getBoolean("island.edtProbe")) {
             startEdtLatencyProbe();
         }
@@ -105,9 +109,7 @@ public class IslandApplication {
             } catch (Exception e) {
                 AppLogger.warn("IslandApplication", "设置 FlatLaf 主题失败", e);
             }
-            // 依据语言设置切换默认区域：影响时间/日期等本地化格式（时间岛显示随语言切换）
-            Locale.setDefault("en".equals(AppConstants.getLanguage())
-                    ? Locale.ENGLISH : Locale.SIMPLIFIED_CHINESE);
+            Locale.setDefault(Locale.SIMPLIFIED_CHINESE);
 
             IslandWindow island = new IslandWindow();
 

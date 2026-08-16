@@ -163,30 +163,6 @@ public final class AppConstants {
         } catch (Exception ignored) { }
     }
 
-    // ── 界面语言 ──
-
-    private static final String PREF_KEY_LANGUAGE = "ui.language";
-
-    /** 获取界面语言（"zh" 简体中文 / "en" English，默认 "zh"）。 */
-    public static String getLanguage() {
-        try {
-            String saved = Preferences.userNodeForPackage(AppConstants.class)
-                    .get(PREF_KEY_LANGUAGE, "zh");
-            return "en".equals(saved) ? "en" : "zh";
-        } catch (Exception e) {
-            return "zh";
-        }
-    }
-
-    /** 设置界面语言并持久化（"zh" / "en"，其他值按 "zh" 处理）。 */
-    public static void setLanguage(String lang) {
-        String value = "en".equals(lang) ? "en" : "zh";
-        try {
-            Preferences.userNodeForPackage(AppConstants.class)
-                    .put(PREF_KEY_LANGUAGE, value);
-        } catch (Exception ignored) { }
-    }
-
     // ── 开机自启 ──
 
     /** 获取开机自启开关状态（默认关闭）。 */

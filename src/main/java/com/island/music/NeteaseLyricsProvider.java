@@ -28,8 +28,9 @@ public final class NeteaseLyricsProvider implements LyricsProvider {
     @Override
     public List<LyricItem> fetchLyrics(String title, String artist) {
         try {
-            String songId = search(title, artist);
-            if (songId.isEmpty()) return Collections.emptyList();
+            String item = bestSearchItem(title, artist);
+            if (item.isEmpty()) return Collections.emptyList();
+            String songId = LyricsService.extractTopLevelField(item, "id");
 
             // /lyric/new 含 lrc + yrc，直接用 lrc（标准 LRC 格式，parseLrc 可正确解析）
             // yrc 是逐字时间格式 [123,456](0,120)字...，不可被 parseLrc 解析
@@ -51,18 +52,32 @@ public final class NeteaseLyricsProvider implements LyricsProvider {
         }
     }
 
-    @Override public String fetchCoverUrl(String title, String artist) { return ""; }
+    @Override
+    public String fetchCoverUrl(String title, String artist) {
+        try {
+            String item = bestSearchItem(title, artist);
+            if (item.isEmpty()) return "";
+            String pic = LyricsService.extractJsonField(item, "picUrl");
+            if (pic.isEmpty()) return "";
+            // 去掉 ?param= 缩略参数拿原图（网易云原图通常 1000x1000+）
+            int q = pic.indexOf('?');
+            return q >= 0 ? pic.substring(0, q) : pic;
+        } catch (Exception e) {
+            return "";
+        }
+    }
 
     // ── 内部 ──
 
-    private static String search(String title, String artist) throws Exception {
+    /** /cloudsearch 搜索并按歌名/歌手评分返回最佳歌曲 item JSON（含 id/al.picUrl），失败返回空串 */
+    private static String bestSearchItem(String title, String artist) throws Exception {
         String url = NCM + "/cloudsearch?keywords="
                 + LyricsService.urlEncode(title + " " + artist) + "&type=1&limit=5";
         HttpResponse<String> resp = LyricsService.HTTP.send(
                 HttpRequest.newBuilder().uri(URI.create(url)).timeout(Duration.ofMillis(3000)).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
         if (resp.statusCode() != 200) return "";
-        return extractSongId(resp.body(), title, artist);
+        return bestItem(resp.body(), title, artist);
     }
 
     private static String lyricField(String songId, String endpoint, String field) throws Exception {
@@ -77,13 +92,14 @@ public final class NeteaseLyricsProvider implements LyricsProvider {
         return (!text.isEmpty() && !"null".equals(text)) ? text : "";
     }
 
-    private static String extractSongId(String json, String title, String artist) {
+    /** 按歌名/歌手评分从搜索结果中选出最佳歌曲 item JSON，未匹配返回空串 */
+    private static String bestItem(String json, String title, String artist) {
         String tl = title.toLowerCase().replaceAll("[\\s()（）《》\"\"''·]", "");
         String al = artist.toLowerCase().replaceAll("[\\s()（）《》\"\"''·]", "");
         int songsIdx = json.indexOf("\"songs\"");
         if (songsIdx < 0) return "";
 
-        String bestId = ""; int bestScore = 0; int pos = songsIdx;
+        String best = ""; int bestScore = 0; int pos = songsIdx;
         while (pos < json.length()) {
             int s = json.indexOf('{', pos); if (s < 0 || s > songsIdx + 5000) break;
             int e = LyricsService.findMatchingBrace(json, s); if (e < 0) break;
@@ -100,10 +116,10 @@ public final class NeteaseLyricsProvider implements LyricsProvider {
                 int sc = 0;
                 if (snl.equals(tl)) sc += 5; else if (snl.contains(tl) || tl.contains(snl)) sc += 3;
                 if (sal.equals(al)) sc += 5; else if (sal.contains(al) || al.contains(sal)) sc += 2;
-                if (sc > bestScore) { bestScore = sc; bestId = sid; }
+                if (sc > bestScore) { bestScore = sc; best = item; }
             }
             pos = e + 1;
         }
-        return bestId;
+        return best;
     }
 }

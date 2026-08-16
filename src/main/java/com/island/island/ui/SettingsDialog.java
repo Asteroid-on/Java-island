@@ -224,25 +224,6 @@ public class SettingsDialog extends JDialog {
         }));
         p.add(Box.createVerticalStrut(12));
 
-        JComboBox<String> langCb = new JComboBox<>(new String[]{"中文（简体）", "English"});
-        langCb.setFont(F_BODY);
-        langCb.setPreferredSize(new Dimension(160, 28));
-        langCb.setMaximumSize(new Dimension(160, 28));
-        langCb.setSelectedIndex("en".equals(AppConstants.getLanguage()) ? 1 : 0);
-        langCb.addActionListener(e -> {
-            String lang = langCb.getSelectedIndex() == 1 ? "en" : "zh";
-            if (lang.equals(AppConstants.getLanguage())) return;
-            AppConstants.setLanguage(lang);
-            AppLogger.info("Settings", "界面语言已设置为: "
-                    + (lang.equals("en") ? "English" : "中文（简体）"));
-            JOptionPane.showMessageDialog(SettingsDialog.this,
-                    "语言设置将在重启应用后生效。\n（当前版本界面文案尚未完全翻译，"
-                            + "切换后部分文字仍显示为中文。）",
-                    "语言", JOptionPane.INFORMATION_MESSAGE);
-        });
-
-        p.add(sectionCard("语言", new Component[]{ fieldRow("界面语言", langCb) }));
-
         JCheckBox autoCollapseCb = new JCheckBox("扩展岛空闲 10 分钟后自动收起");
         autoCollapseCb.setFont(F_BODY);
         autoCollapseCb.setForeground(C_TEXT);

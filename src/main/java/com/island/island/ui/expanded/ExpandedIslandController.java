@@ -196,15 +196,20 @@ public class ExpandedIslandController {
         gestureSlideProgress = 0f;
         musicPanelShownInExpanded = false;
 
-        Point startLoc = host.getMainIslandWindow().getLocation();
-        int startW = host.getMainIslandWindow().getWidth();
-        int startH = host.getMainIslandWindow().getHeight();
+        // 展开动画起点采用主岛规范静态位置：宿主窗口经隐藏动画后会停在离屏球位
+        // （runHideAnimation 收尾 setBounds 至 y=-ballSize 并 setVisible(false)），
+        // 实时几何不可信，直接读取会导致展开动画起点漂移
+        Toolkit toolkit = Toolkit.getDefaultToolkit();
+        Dimension screenSize = toolkit.getScreenSize();
+        IslandConfig config = host.getService().getConfig();
+        int startW = config.width;
+        int startH = config.height;
+        int startX = (screenSize.width - startW) / 2;
+        int startY = config.positionY;
 
         host.getService().hide();
         host.getMainIslandWindow().setVisible(false);
 
-        Toolkit toolkit = Toolkit.getDefaultToolkit();
-        Dimension screenSize = toolkit.getScreenSize();
         int targetX = (screenSize.width - IslandUiStyle.EXPANDED_WIDTH) / 2;
         int targetY = 0;
         int targetH = IslandUiStyle.EXPANDED_HEIGHT;
@@ -212,7 +217,7 @@ public class ExpandedIslandController {
         if (reuseWindow) {
             expandedWindow.getContentPane().removeAll();
         }
-        expandedWindow.setLocation(startLoc);
+        expandedWindow.setLocation(startX, startY);
         expandedWindow.setSize(startW, startH);
 
         JPanel panel = new JPanel(null) {
@@ -223,8 +228,10 @@ public class ExpandedIslandController {
                     Graphics2D g2d = (Graphics2D) g;
                     g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                     oldClip = g2d.getClip();
-                    int arc = getHeight();
-                    g2d.setClip(new RoundRectangle2D.Float(0, 0, getWidth(), getHeight(), arc, arc));
+                    // 圆角几何统一内缩 1px：为 AA 过渡留出透明带，避免贴边绘制被窗口边界截断成台阶状硬边
+                    int w = getWidth(), h = getHeight();
+                    int arc = Math.max(0, h - 2);
+                    g2d.setClip(new RoundRectangle2D.Float(1, 1, Math.max(0, w - 2), Math.max(0, h - 2), arc, arc));
                 }
                 try {
                     super.paint(g);
@@ -242,9 +249,11 @@ public class ExpandedIslandController {
                 Graphics2D g2d = (Graphics2D) g.create();
                 try {
                     g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                    int arc = getHeight();
+                    // 与 paint() 的 clip 几何完全一致：统一内缩 1px，arc = 高 - 2 保持两端正半圆帽
+                    int w = getWidth(), h = getHeight();
+                    int arc = Math.max(0, h - 2);
                     g2d.setColor(IslandUiStyle.DEEP_BLACK);
-                    g2d.fillRoundRect(0, 0, getWidth(), getHeight(), arc, arc);
+                    g2d.fillRoundRect(1, 1, Math.max(0, w - 2), Math.max(0, h - 2), arc, arc);
                 } finally {
                     g2d.dispose();
                 }
@@ -301,8 +310,8 @@ public class ExpandedIslandController {
 
             int curW = (int) (startW + (IslandUiStyle.EXPANDED_WIDTH - startW) * eased);
             int curH = (int) (startH + (targetH - startH) * eased);
-            int curX = (int) (startLoc.x + (targetX - startLoc.x) * eased);
-            int curY = (int) (startLoc.y + (targetY - startLoc.y) * eased);
+            int curX = (int) (startX + (targetX - startX) * eased);
+            int curY = (int) (startY + (targetY - startY) * eased);
 
             expandedWindow.setBounds(curX, curY, curW, curH);
 
@@ -424,8 +433,13 @@ public class ExpandedIslandController {
         int startW = expandedWindow.getWidth();
         int startH = expandedWindow.getHeight();
 
-        Point targetLoc = host.getMainIslandWindow().getLocation();
+        // 收起终点采用主岛规范静态位置（与 show() 的展开起点一致），
+        // 保证收起是展开的严格对称反向镜像；宿主窗口实时几何可能停在隐藏动画后的离屏球位
+        Toolkit toolkit = Toolkit.getDefaultToolkit();
+        Dimension screenSize = toolkit.getScreenSize();
         IslandConfig config = host.getService().getConfig();
+        int collapseTargetX = (screenSize.width - config.width) / 2;
+        int collapseTargetY = config.positionY;
         int targetW = config.width;
         int targetH = config.height;
 
@@ -478,8 +492,8 @@ public class ExpandedIslandController {
                 double eased = progress * progress;
                 int curW = (int) (startW + (targetW - startW) * eased);
                 int curH = (int) (startH + (targetH - startH) * eased);
-                int curX = (int) (startLoc.x + (targetLoc.x - startLoc.x) * eased);
-                int curY = (int) (startLoc.y + (targetLoc.y - startLoc.y) * eased);
+                int curX = (int) (startLoc.x + (collapseTargetX - startLoc.x) * eased);
+                int curY = (int) (startLoc.y + (collapseTargetY - startLoc.y) * eased);
                 win.setBounds(curX, curY, curW, curH);
                 animationDone = progress >= 1.0f;
             }

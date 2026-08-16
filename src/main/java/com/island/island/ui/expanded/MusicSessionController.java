@@ -43,6 +43,10 @@ class MusicSessionController {
     private String lastFetchedTrackId = "";
     private String lastFetchedCoverTrackId = "";
     private String lastCoverBase64 = "";
+    /** 最近一次尝试解码的 SMTC Base64：解码后无论是否应用都记录，防止每轮重复解码 */
+    private String lastTriedCoverBase64 = "";
+    /** 切歌前上一曲目的 SMTC Base64：新曲目仍上报相同缩略图时判定为 daemon 旧图，不信任 */
+    private String prevTrackCoverBase64 = "";
     /** SMTC Base64 封面成功应用对应的曲目标识（title|artist），用于 URL 源封面跳过判断 */
     private String smTcCoverAppliedTrackId = "";
     /** 上一次处于严格播放状态的来源播放器标识，用于检测活跃播放器切换 */
@@ -123,9 +127,15 @@ class MusicSessionController {
             lastDaemonEndTimeMs = 0;
             fetchingLyrics = false;
             fetchingCover = false;
-            // 保留旧封面显示，新封面异步到达后无缝替换，避免切换瞬间封面闪失
+            // 切歌：记录上一曲缩略图用于旧图识别，清空旧封面确保与新曲目严格对应
+            prevTrackCoverBase64 = lastCoverBase64;
+            lastCoverBase64 = "";
+            lastTriedCoverBase64 = "";
+            smTcCoverAppliedTrackId = "";
             lastFetchedTrackId = "";
             lastFetchedCoverTrackId = "";
+            mp.flushCoverImage();
+            mp.repaintCover();
             mp.setLyricsText(" ");
         }
 
@@ -141,13 +151,19 @@ class MusicSessionController {
         if (info.hasSession() && !trackId.equals(lastFetchedTrackId) && !info.getTitle().isEmpty()) {
             lastFetchedTrackId = trackId;
             if (!activeSourceSwitched) {
-                // 切歌时仅重置歌词状态；封面保留显示，新封面异步到达后无缝替换，避免闪失
+                // 切歌：重置歌词状态；记录上一曲缩略图并清空旧封面，确保封面与新曲目严格对应
                 lyricsService.clear();
                 lrcLines = Collections.emptyList();
                 currentLyricIndex = -1;
                 lastDaemonEndTimeMs = 0;
                 fetchingLyrics = false;
                 fetchingCover = false;
+                prevTrackCoverBase64 = lastCoverBase64;
+                lastCoverBase64 = "";
+                lastTriedCoverBase64 = "";
+                smTcCoverAppliedTrackId = "";
+                mp.flushCoverImage();
+                mp.repaintCover();
                 mp.setLyricsText(" ");
             }
             fetchLyricsAsync(info.getTitle(), info.getArtist());
@@ -265,10 +281,20 @@ class MusicSessionController {
             fetchLyricsAsync(fullTitle, fullArtist);
         }
 
-        // 封面：SMTC Base64 优先，未变化时跳过重复解码
+        // 封面：SMTC Base64 强制优先；daemon 时序滞后的旧图不信任，低分辨率缩略图插值提升后使用
         String b64 = currentMusicInfo.getThumbnailBase64();
         if (!b64.isEmpty()) {
-            if (!b64.equals(lastCoverBase64)) {
+            if (b64.equals(prevTrackCoverBase64)) {
+                // 新曲目仍上报上一曲的缩略图 → 判定为 daemon 旧图，不信任，等待网络封面补位
+                if (AppConstants.DEBUG_CONSOLE) {
+                    System.out.println("[IslandWindow] SMTC缩略图与上一曲相同，判定为旧图，等待网络封面");
+                }
+                smTcCoverAppliedTrackId = "";
+            } else if (b64.equals(lastTriedCoverBase64)) {
+                // 已尝试解码：仅当该图确实已应用时标记，避免每轮重复解码
+                smTcCoverAppliedTrackId = b64.equals(lastCoverBase64) ? fullTitle + "|" + fullArtist : "";
+            } else {
+                lastTriedCoverBase64 = b64;
                 smTcCoverAppliedTrackId = "";
                 try {
                     byte[] data = Base64.getDecoder().decode(b64);
@@ -276,7 +302,12 @@ class MusicSessionController {
                     MediaTracker mt = new MediaTracker(new JLabel());
                     mt.addImage(raw, 0);
                     mt.waitForID(0, 1000);
-                    if (raw.getWidth(null) > 0) {
+                    int w = raw.getWidth(null);
+                    if (w > 0) {
+                        // 强制使用 SMTC 缩略图：低分辨率由 createCircularCover 双三次插值提升至 COVER_HIRES(144px)
+                        if (w < 200) {
+                            System.out.println("[IslandWindow] SMTC缩略图分辨率较低(" + w + "px)，已插值提升显示");
+                        }
                         mp.setCoverImage(createCircularCover(raw, IslandUiStyle.COVER_HIRES));
                         lastCoverBase64 = b64;
                         smTcCoverAppliedTrackId = fullTitle + "|" + fullArtist;
@@ -284,8 +315,6 @@ class MusicSessionController {
                 } catch (Exception ex) {
                     // 解码失败：保留当前封面显示，标记保持未应用，让 URL 源补位，避免封面卡死
                 }
-            } else {
-                smTcCoverAppliedTrackId = fullTitle + "|" + fullArtist;
             }
         } else {
             smTcCoverAppliedTrackId = "";
