@@ -40,8 +40,8 @@ class MusicSessionController {
     private int currentLyricIndex = -1;
     private volatile boolean fetchingLyrics = false;
     private volatile boolean fetchingCover = false;
-    private String lastFetchedTrackId = "";
-    private String lastFetchedCoverTrackId = "";
+    private volatile String lastFetchedTrackId = "";
+    private volatile String lastFetchedCoverTrackId = "";
     private String lastCoverBase64 = "";
     /** 最近一次尝试解码的 SMTC Base64：解码后无论是否应用都记录，防止每轮重复解码 */
     private String lastTriedCoverBase64 = "";
@@ -201,21 +201,37 @@ class MusicSessionController {
         if (playbackResumed || sessionRestored) {
             controller.cancelMusicStopAutoHideTimer();
             controller.setMusicPopupSuppressedByUser(false);
-            if (playbackResumed && controller.isMusicPanelShown()) {
-                mp.startCoverRotation();
-                mp.startLyricScrollTimer();
+            if (controller.isMusicPanelShown()) {
+                // 按当前播放位置刷新歌词游标：恢复播放时从暂停时定位的歌词行继续正常滚动，
+                // 暂停状态下恢复会话时同样定位到当前播放位置对应的歌词行
+                updateProgressDisplay(info);
+                if (playbackResumed) {
+                    mp.startCoverRotation();
+                    mp.startLyricScrollTimer();
+                }
             }
         } else if (wasStrictly && !isStrictly) {
             // 停止播放（变为暂停/停止/会话丢失）：每次暂停均启动 2 分钟自动收回计时，
             // 到期时仅在扩展岛显示音乐面板的情况下才真正收回（见 startMusicStopAutoHideTimer）
             mp.stopCoverRotation();
             mp.stopLyricScrollTimer();
-            // 仅重置歌词游标；保留 lastFetchedTrackId 与已拉取的歌词/封面，
+            // 保留 lastFetchedTrackId 与已拉取的歌词/封面，
             // 避免暂停后恢复播放同一首歌时被切歌检测误判，导致封面被清空重新拉取而短暂消失
-            currentLyricIndex = -1;
+            if (info.isPlaying()) {
+                // 暂停：按 daemon 汇报的暂停位置定位歌词游标，保持该行高亮显示
+                updateProgressDisplay(info);
+            } else {
+                // 停止/会话丢失：重置歌词游标退回占位（保持原有处理不变）
+                currentLyricIndex = -1;
+                mp.repaintLyrics();
+            }
             controller.setMusicPopupSuppressedByUser(false);
             controller.setMusicPanelAutoShownForSession(false);
             if (controller.isVisible()) controller.startMusicStopAutoHideTimer();
+        } else if (wasPlaying && !info.isPlaying()) {
+            // 暂停后再停止/关闭播放器：清空残留歌词游标，退回占位显示
+            currentLyricIndex = -1;
+            mp.repaintLyrics();
         } else if (isPlaying && controller.isVisible()) {
             if (controller.isMusicPanelShown()) {
                 if (isStrictly) {
@@ -361,6 +377,7 @@ class MusicSessionController {
         if (title.isEmpty() || artist.isEmpty()) return;
         if (!lrcLines.isEmpty() || fetchingLyrics) return;
         fetchingLyrics = true;
+        final String trackId = title + "|" + artist;
         final String srcAppId = currentMusicInfo.getSourceAppId();
         System.out.println("[IslandWindow] 开始异步获取歌词: " + title + " - " + artist + " src=" + srcAppId);
         new Thread(() -> {
@@ -369,20 +386,31 @@ class MusicSessionController {
                 System.out.println("[IslandWindow] 歌词获取结果: " + lines.size() + " 行");
                 if (!lines.isEmpty()) {
                     SwingUtilities.invokeLater(() -> {
+                        // stale-track 校验：歌词只属于发起请求时的曲目
+                        String currentTrackId = currentMusicInfo.getTitle() + "|" + currentMusicInfo.getArtist();
+                        if (!trackId.equals(currentTrackId)) {
+                            System.out.println("[IslandWindow] 歌词已过期（曲目已切换），丢弃");
+                            return;
+                        }
                         lrcLines = lines;
                         currentLyricIndex = -1;
                         System.out.println("[LyricProgress] 歌词异步加载完成: " + lines.size() + " 行");
                         MusicPanel mp = controller.getMusicPanel();
                         if (mp.isInitialized()) {
+                            // 暂停期间加载完成：仍按暂停时的播放位置立即定位并显示对应歌词行
                             updateProgressDisplay(currentMusicInfo);
                             mp.revalidateLyricsParent();
                         }
-                        // 确保定时器在运行（可能在歌词加载前已启动但因 lrcLines 为空而空转）
+                        // 确保定时器在运行（可能在歌词加载前已启动但因 lrcLines 为空而空转；
+                        // 暂停状态下不会启动，见 startLyricScrollTimer 的 isStrictlyPlaying 守卫）
                         mp.startLyricScrollTimer();
                     });
                 }
             } finally {
-                fetchingLyrics = false;
+                // 仅当此请求仍为"当前活跃请求"时才释放锁，防止旧曲目线程误清标志
+                if (trackId.equals(lastFetchedTrackId)) {
+                    fetchingLyrics = false;
+                }
             }
         }, "LyricsFetcher").start();
     }

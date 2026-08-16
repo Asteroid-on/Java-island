@@ -296,7 +296,7 @@ public class SettingsDialog extends JDialog {
         p.add(sectionCard("应用信息", new Component[]{
             infoLine("应用名称", "云隙泡（Java-Island）"),
             Box.createVerticalStrut(6),
-            infoLine("版本", "1.0"),
+            infoLine("版本", "1.0.1"),
             Box.createVerticalStrut(6),
             infoLine("Java", System.getProperty("java.version")),
         }));
