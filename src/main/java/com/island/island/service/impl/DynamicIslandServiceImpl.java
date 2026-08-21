@@ -4,6 +4,7 @@ import com.island.island.model.IslandConfig;
 import com.island.island.model.IslandNotification;
 import com.island.island.model.IslandState;
 import com.island.island.service.DynamicIslandService;
+import com.island.util.ScreenUtil;
 
 import java.awt.*;
 import java.util.ArrayList;
@@ -120,10 +121,10 @@ public class DynamicIslandServiceImpl implements DynamicIslandService {
 
     @Override
     public Point calculateLocation() {
-        Toolkit toolkit = Toolkit.getDefaultToolkit();
-        Dimension screenSize = toolkit.getScreenSize();
-        int x = (screenSize.width - config.width) / 2;
-        int y = config.positionY;
+        // 按鼠标所在显示器居中（托盘点击时即任务栏所在屏，鼠标触发时即触发屏），多显示器自适应
+        Rectangle screenBounds = ScreenUtil.getScreenBoundsAtMouse();
+        int x = screenBounds.x + (screenBounds.width - config.width) / 2;
+        int y = screenBounds.y + config.positionY;
         return new Point(x, y);
     }
 }

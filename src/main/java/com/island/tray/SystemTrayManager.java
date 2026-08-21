@@ -8,6 +8,7 @@ import com.island.island.ui.IslandWindow;
 import com.island.island.ui.SettingsDialog;
 import com.island.util.AnimationUtil;
 import com.island.util.AppLogger;
+import com.island.util.ScreenUtil;
 import com.island.util.SvgIcon;
 
 import java.awt.*;
@@ -481,11 +482,13 @@ public class SystemTrayManager {
                             mouseLocation.y <= islandLocation.y + islandHeight
                         );
 
-                        // 检测鼠标是否在上边框触发区域内（限制在岛的宽度范围内）
+                        // 检测鼠标是否在所在屏幕的上边框触发区域内（多屏：以鼠标所在屏顶部为准，
+                        // 水平范围取该屏内岛的居中位置附近，不依赖岛当前残留位置）
+                        Rectangle triggerScreen = ScreenUtil.getScreenBoundsAt(mouseLocation);
+                        int islandCenterX = triggerScreen.x + triggerScreen.width / 2;
                         boolean isNearTopEdge = (
-                            mouseLocation.y <= AppConstants.TRIGGER_DISTANCE &&
-                            mouseLocation.x >= islandLocation.x - 10 &&
-                            mouseLocation.x <= islandLocation.x + islandWidth + 10
+                            mouseLocation.y <= triggerScreen.y + AppConstants.TRIGGER_DISTANCE &&
+                            Math.abs(mouseLocation.x - islandCenterX) <= islandWidth / 2 + 10
                         );
 
                         // 扩展岛显示时，主岛不再响应鼠标触发
@@ -504,6 +507,15 @@ public class SystemTrayManager {
                             SwingUtilities.invokeLater(() -> islandWindow.restoreTimeDisplay());
                             service.show();
                             animateShow();
+                        } else if (isNearTopEdge && !isMouseOverIsland &&
+                                   service.getState() == IslandState.VISIBLE &&
+                                   !islandWindow.isShowingNotification()) {
+                            // 岛已显示但鼠标在其所在屏顶部而岛不在此屏：直接把岛切到鼠标所在屏
+                            // （完整形态免动画；Swing 写操作切 EDT 执行）
+                            Point expected = service.calculateLocation();
+                            if (!islandWindow.getLocation().equals(expected)) {
+                                SwingUtilities.invokeLater(() -> islandWindow.setLocation(expected));
+                            }
                         } else if (!isNearTopEdge && !isMouseOverIsland &&
                                    service.getState() == IslandState.VISIBLE &&
                                    !islandWindow.isShowingNotification()) {
@@ -577,6 +589,10 @@ public class SystemTrayManager {
         if (islandWindow.isVisible()
                 && islandWindow.getWidth() == targetWidth
                 && islandWindow.getHeight() == targetHeight) {
+            // 跨屏：岛已完整显示但位置与鼠标所在屏不一致（如状态脱钩后鼠标换屏触发），直接移动
+            if (!islandWindow.getLocation().equals(location)) {
+                islandWindow.setLocation(location);
+            }
             service.show();
             service.onAnimationComplete();
             showHideAnimRunning = false;
@@ -672,6 +688,12 @@ public class SystemTrayManager {
         int centerX = currentLocation.x + currentWidth / 2;
         int centerY = currentLocation.y + currentHeight / 2;
 
+        // 隐藏滑出目标按岛当前所在显示器固定：动画期间鼠标跨屏移动不会改变滑出终点
+        Rectangle hideScreen = ScreenUtil.getScreenBoundsAt(currentLocation);
+        final int hideBaseX = hideScreen.x + (hideScreen.width - AppConstants.DEFAULT_WIDTH) / 2;
+        final int hideBaseY = hideScreen.y;
+        final int hideTargetY = hideBaseY - ballSize;
+
         if (AppConstants.DEBUG_CONSOLE) {
             System.out.println("开始收缩动画，中心点: (" + centerX + ", " + centerY + ")");
         }
@@ -708,7 +730,7 @@ public class SystemTrayManager {
                 }
 
             } else if (phase[0] == 1) {
-                // 阶段2：小球向上移动并消失
+                // 阶段2：小球向上移动并消失（目标固定在动画开始时捕获的所在屏）
                 progress[0] += 1.0 / durationPhase2;
                 if (progress[0] >= 1.0) {
                     progress[0] = 1.0;
@@ -716,11 +738,9 @@ public class SystemTrayManager {
 
                 double eased = AnimationUtil.linear(progress[0]);
 
-                Point location = calculateIslandLocation();
-                int targetY = location.y - ballSize;
-                int currentY = (int)(location.y + (targetY - location.y) * eased);
+                int currentY = (int)(hideBaseY + (hideTargetY - hideBaseY) * eased);
 
-                islandWindow.setBounds(location.x + (AppConstants.DEFAULT_WIDTH - ballSize) / 2,
+                islandWindow.setBounds(hideBaseX + (AppConstants.DEFAULT_WIDTH - ballSize) / 2,
                         currentY, ballSize, ballSize);
                 islandWindow.repaint();
 

@@ -8,6 +8,7 @@ import com.island.music.MusicMonitor;
 import com.island.tray.SystemTrayManager;
 import com.island.util.AppLogger;
 import com.island.util.DpiUtil;
+import com.island.util.ScreenUtil;
 import com.island.util.WindowsTheme;
 import com.formdev.flatlaf.FlatDarkLaf;
 import com.formdev.flatlaf.FlatLightLaf;
@@ -129,10 +130,10 @@ public class IslandApplication {
             PrivacyMonitor privacyMonitor = new PrivacyMonitor();
             island.setPrivacyMonitor(privacyMonitor);
 
-            Toolkit toolkit = Toolkit.getDefaultToolkit();
-            Dimension screenSize = toolkit.getScreenSize();
-            int x = (screenSize.width - island.getWidth()) / 2;
-            int y = 0;
+            // 初始定位按鼠标所在显示器居中（窗口初始隐藏，随首次触发重新定位）
+            Rectangle screenBounds = ScreenUtil.getScreenBoundsAtMouse();
+            int x = screenBounds.x + (screenBounds.width - island.getWidth()) / 2;
+            int y = screenBounds.y;
             island.setLocation(x, y);
 
             // 默认隐藏到托盘（动态岛特性：鼠标靠近顶部才显示）
