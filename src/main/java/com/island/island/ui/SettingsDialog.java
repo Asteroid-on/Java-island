@@ -306,7 +306,7 @@ public class SettingsDialog extends JDialog {
             Box.createVerticalStrut(6),
             infoLine("许可证", "MIT License"),
             Box.createVerticalStrut(6),
-            infoLine("项目地址", "github.com/Java-island/Java-island"),
+            infoLine("项目地址", "github.com/Asteroid-on/Java-island"),
         }));
         return p;
     }
@@ -800,7 +800,7 @@ public class SettingsDialog extends JDialog {
         String bodyText = buildGitHubBody();
         copyToClipboard(subject + System.lineSeparator() + System.lineSeparator() + bodyText);
         try {
-            String url = "https://github.com/Java-island/Java-island/issues/new"
+            String url = "https://github.com/Asteroid-on/Java-island/issues/new"
                     + "?labels=bug"
                     + "&title=" + URLEncoder.encode(subject, StandardCharsets.UTF_8)
                     + "&body=" + URLEncoder.encode(bodyText, StandardCharsets.UTF_8);
@@ -812,7 +812,7 @@ public class SettingsDialog extends JDialog {
             AppLogger.warn("Settings", "打开 GitHub Issues 失败", ex);
             JOptionPane.showMessageDialog(this,
                     "无法打开浏览器。\n报告已复制到剪贴板，请手动访问 "
-                            + "github.com/Java-island/Java-island/issues 提交。",
+                            + "github.com/Asteroid-on/Java-island/issues 提交。",
                     "提交错误报告", JOptionPane.WARNING_MESSAGE);
         }
     }

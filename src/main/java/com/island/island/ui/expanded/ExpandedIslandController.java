@@ -9,6 +9,7 @@ import com.island.music.LyricsService;
 import com.island.music.model.MusicInfo;
 import com.island.util.AnimationUtil;
 import com.island.util.AppLogger;
+import com.island.util.ScreenUtil;
 
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -16,6 +17,7 @@ import javax.swing.JWindow;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
+import java.awt.AlphaComposite;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
@@ -27,12 +29,15 @@ import java.awt.GridBagLayout;
 import java.awt.Image;
 import java.awt.Insets;
 import java.awt.Point;
+import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.Shape;
 import java.awt.Toolkit;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.geom.AffineTransform;
 import java.awt.geom.RoundRectangle2D;
+import java.awt.image.BufferedImage;
 
 /**
  * 扩展岛控制器：管理深黑色大号药丸窗口（第二个 JWindow）的
@@ -199,19 +204,20 @@ public class ExpandedIslandController {
         // 展开动画起点采用主岛规范静态位置：宿主窗口经隐藏动画后会停在离屏球位
         // （runHideAnimation 收尾 setBounds 至 y=-ballSize 并 setVisible(false)），
         // 实时几何不可信，直接读取会导致展开动画起点漂移
-        Toolkit toolkit = Toolkit.getDefaultToolkit();
-        Dimension screenSize = toolkit.getScreenSize();
+        // 所在屏按主岛窗口位置反查：用户点击时主岛可见位置可靠；设备/音乐自动弹出时主岛
+        // 停在离屏球位（x 仍在所属屏水平范围内），由 ScreenUtil 兜底匹配，不依赖鼠标瞬态位置
+        Rectangle screenBounds = ScreenUtil.getScreenBoundsAt(host.getMainIslandWindow().getLocation());
         IslandConfig config = host.getService().getConfig();
         int startW = config.width;
         int startH = config.height;
-        int startX = (screenSize.width - startW) / 2;
-        int startY = config.positionY;
+        int startX = screenBounds.x + (screenBounds.width - startW) / 2;
+        int startY = screenBounds.y + config.positionY;
 
         host.getService().hide();
         host.getMainIslandWindow().setVisible(false);
 
-        int targetX = (screenSize.width - IslandUiStyle.EXPANDED_WIDTH) / 2;
-        int targetY = 0;
+        int targetX = screenBounds.x + (screenBounds.width - IslandUiStyle.EXPANDED_WIDTH) / 2;
+        int targetY = screenBounds.y;
         int targetH = IslandUiStyle.EXPANDED_HEIGHT;
 
         if (reuseWindow) {
@@ -221,26 +227,69 @@ public class ExpandedIslandController {
         expandedWindow.setSize(startW, startH);
 
         JPanel panel = new JPanel(null) {
+            /** 手动双缓冲离屏画布：per-pixel 透明窗口无 Swing 默认双缓冲，
+             *  直写屏幕会暴露“背景先清、卡片后画”的中间态，导致切换时背景闪烁 */
+            private BufferedImage buffer;
+            /** 缓冲区对应的设备缩放倍率（HiDPI）：与当前屏幕变换不一致时按新倍率重建，自适应跨屏/改缩放 */
+            private double bufferScaleX = 1.0;
+            private double bufferScaleY = 1.0;
+
             @Override
             public void paint(Graphics g) {
-                Shape oldClip = null;
-                if (g instanceof Graphics2D) {
-                    Graphics2D g2d = (Graphics2D) g;
-                    g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                    oldClip = g2d.getClip();
-                    // 圆角几何统一内缩 1px：为 AA 过渡留出透明带，避免贴边绘制被窗口边界截断成台阶状硬边
-                    int w = getWidth(), h = getHeight();
-                    int arc = Math.max(0, h - 2);
-                    g2d.setClip(new RoundRectangle2D.Float(1, 1, Math.max(0, w - 2), Math.max(0, h - 2), arc, arc));
-                }
-                try {
+                int w = getWidth(), h = getHeight();
+                if (w <= 0 || h <= 0 || !(g instanceof Graphics2D)) {
                     super.paint(g);
-                } finally {
-                    // 无条件恢复原 clip（可能为 null，setClip(null) 表示清除裁剪），防止圆角 clip 泄漏到后续绘制
-                    if (g instanceof Graphics2D) {
-                        ((Graphics2D) g).setClip(oldClip);
-                    }
+                    return;
                 }
+                // 自适应 HiDPI：每帧从屏幕 Graphics 读当前设备倍率（窗口跨屏/系统改缩放后自动生效），
+                // 按设备像素分辨率建缓冲并应用同倍率变换，文字/圆环以设备分辨率栅格化后 1:1 blit 保持清晰；
+                // 逻辑分辨率缓冲会被屏幕变换放大插值 → 文字电池整体发糊
+                AffineTransform deviceTx = ((Graphics2D) g).getTransform();
+                double sx = deviceTx.getScaleX();
+                double sy = deviceTx.getScaleY();
+                if (sx <= 0 || sy <= 0) {
+                    super.paint(g);
+                    return;
+                }
+                int bufW = (int) Math.ceil(w * sx);
+                int bufH = (int) Math.ceil(h * sy);
+                // 倍率变化或尺寸超出现有缓冲时重建；按展开态最大尺寸（设备像素）分配，
+                // 展开/收起 resize 与卡片滑动全程复用不重新分配
+                if (buffer == null
+                        || bufferScaleX != sx || bufferScaleY != sy
+                        || buffer.getWidth() < bufW || buffer.getHeight() < bufH) {
+                    int maxBufW = Math.max(bufW, (int) Math.ceil(IslandUiStyle.EXPANDED_WIDTH * sx));
+                    int maxBufH = Math.max(bufH, (int) Math.ceil(IslandUiStyle.EXPANDED_HEIGHT * sy));
+                    buffer = new BufferedImage(maxBufW, maxBufH, BufferedImage.TYPE_INT_ARGB);
+                    bufferScaleX = sx;
+                    bufferScaleY = sy;
+                }
+                Graphics2D bg = buffer.createGraphics();
+                try {
+                    bg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    // 每帧从全透明底开始（设备像素区）：半透明背景不与上一帧残留内容叠加，帧间亮度稳定
+                    bg.setComposite(AlphaComposite.Clear);
+                    bg.fillRect(0, 0, bufW, bufH);
+                    bg.setComposite(AlphaComposite.SrcOver);
+                    // 应用设备倍率：子组件仍按逻辑坐标绘制，落库为设备分辨率像素
+                    bg.setTransform(AffineTransform.getScaleInstance(sx, sy));
+                    // 圆角几何统一内缩 1px：为 AA 过渡留出透明带，避免贴边绘制被窗口边界截断成台阶状硬边
+                    Shape oldClip = bg.getClip();
+                    int arc = Math.max(0, h - 2);
+                    bg.setClip(new RoundRectangle2D.Float(1, 1, Math.max(0, w - 2), Math.max(0, h - 2), arc, arc));
+                    try {
+                        // 背景 + 全部子卡片一次性合成进离屏画布
+                        super.paint(bg);
+                    } finally {
+                        // 恢复原 clip（可能为 null，setClip(null) 表示清除裁剪），防止圆角 clip 泄漏
+                        bg.setClip(oldClip);
+                    }
+                } finally {
+                    bg.dispose();
+                }
+                // 设备像素 1:1 映射回屏幕：目标矩形写逻辑坐标，屏幕变换把源像素按原倍率精确还原，
+                // 全程无放大插值；面板小于缓冲区（展开/收起 resize 中）只取左上有效子区域
+                g.drawImage(buffer, 0, 0, w, h, 0, 0, bufW, bufH, null);
             }
 
             @Override
@@ -249,6 +298,9 @@ public class ExpandedIslandController {
                 Graphics2D g2d = (Graphics2D) g.create();
                 try {
                     g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    // 清除 paint() 传入的圆角 clip：背景填充需要完整的 AA 过渡像素，
+                    // 否则边缘被硬边 clip 二次裁切，圆角退化成台阶状锯齿（主岛无 clip 故光滑）
+                    g2d.setClip(null);
                     // 与 paint() 的 clip 几何完全一致：统一内缩 1px，arc = 高 - 2 保持两端正半圆帽
                     int w = getWidth(), h = getHeight();
                     int arc = Math.max(0, h - 2);
@@ -435,11 +487,11 @@ public class ExpandedIslandController {
 
         // 收起终点采用主岛规范静态位置（与 show() 的展开起点一致），
         // 保证收起是展开的严格对称反向镜像；宿主窗口实时几何可能停在隐藏动画后的离屏球位
-        Toolkit toolkit = Toolkit.getDefaultToolkit();
-        Dimension screenSize = toolkit.getScreenSize();
+        // 所在屏按扩展岛窗口当前位置反查（展开后窗口即位于展开屏，与展开起点天然对称）
+        Rectangle screenBounds = ScreenUtil.getScreenBoundsAt(startLoc);
         IslandConfig config = host.getService().getConfig();
-        int collapseTargetX = (screenSize.width - config.width) / 2;
-        int collapseTargetY = config.positionY;
+        int collapseTargetX = screenBounds.x + (screenBounds.width - config.width) / 2;
+        int collapseTargetY = screenBounds.y + config.positionY;
         int targetW = config.width;
         int targetH = config.height;
 
@@ -478,9 +530,9 @@ public class ExpandedIslandController {
                     }
                     animationDone = false;
                 } else {
-                    // 阶段2：小球向上滑出屏幕顶部（可见滑出，自然消失）
+                    // 阶段2：小球向上滑出所在屏幕顶部（可见滑出，自然消失）
                     int startY = centerY - ball / 2;
-                    int targetY = -ball;
+                    int targetY = screenBounds.y - ball;
                     int curY = (int) (startY + (targetY - startY) * pe);
                     win.setLocation(centerX - ball / 2, curY);
                     animationDone = phaseProgress >= 1.0f;
@@ -580,6 +632,7 @@ public class ExpandedIslandController {
                     if (!found) {
                         rp.add(placeholderPanel);
                         rp.revalidate();
+                        ensureUsagePanelOnTop();
                         layoutExpandedPanel();
                     }
                 }
@@ -624,6 +677,7 @@ public class ExpandedIslandController {
         }
         // 仅布局变更时才触发全量重排，避免歌词闪烁
         if (replacedPlaceholder || !found) {
+            ensureUsagePanelOnTop();
             layoutExpandedPanel();
         }
     }
@@ -645,6 +699,23 @@ public class ExpandedIslandController {
             }
         });
         gestureSlideAnimTimer.start();
+    }
+
+    /**
+     * 使用状态面板保持最顶层，避免被滑入的音乐/占位面板遮挡。
+     * 组件增删会重排 z-order，仅在增删后调用一次，动画每帧不再操作。
+     */
+    private void ensureUsagePanelOnTop() {
+        if (expandedWindow == null) return;
+        Container cp = expandedWindow.getContentPane();
+        if (cp.getComponentCount() == 0) return;
+        Component root = cp.getComponent(0);
+        if (!(root instanceof JPanel)) return;
+        JPanel rp = (JPanel) root;
+        JPanel usagePanelCmp = deviceUsagePanel.getPanel();
+        if (usagePanelCmp != null && usagePanelCmp.getParent() == rp) {
+            rp.setComponentZOrder(usagePanelCmp, 0);
+        }
     }
 
     /** 按滑动进度同步定位各卡片（电池 / 占位 / 设备状态 / 音乐面板） */
@@ -677,10 +748,7 @@ public class ExpandedIslandController {
                 batteryPanelCmp.setBounds(battX - offset, battY, battSize, battSize);
             } else if (c == placeholderPanel && placeholderPanel != null) {
                 placeholderPanel.setBounds(ins.left + iw - offset, ins.top, iw, ih);
-                placeholderPanel.revalidate();
             } else if (c == usagePanelCmp && usagePanelCmp != null) {
-                // 保持使用状态面板位于最顶层，避免被滑入的音乐面板遮挡
-                rp.setComponentZOrder(usagePanelCmp, 0);
                 Dimension pref = usagePanelCmp.getPreferredSize();
                 // 面板中心对齐右半圆圆心；若超窗则整体左移保证完整可见
                 int centerX = pw - IslandUiStyle.EXPANDED_HEIGHT / 2;
@@ -698,7 +766,6 @@ public class ExpandedIslandController {
                         ? usagePanelCmp.getPreferredSize().width + IslandUiStyle.USAGE_SLOT_GAP : 0;
                 int musicW = pw - ins.right - musicX - reserved;
                 musicPanelCmp.setBounds(musicX + iw - offset, ins.top, musicW, ih);
-                musicPanelCmp.revalidate();
             }
         }
         rp.revalidate();
