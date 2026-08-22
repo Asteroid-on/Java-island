@@ -10,6 +10,7 @@ import com.island.music.model.MusicInfo;
 import com.island.util.AnimationUtil;
 import com.island.util.AppLogger;
 import com.island.util.ScreenUtil;
+import com.island.weather.WeatherInfo;
 
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -36,6 +37,8 @@ import java.awt.Toolkit;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.AffineTransform;
+import java.awt.geom.Area;
+import java.awt.geom.Rectangle2D;
 import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 
@@ -54,6 +57,7 @@ public class ExpandedIslandController {
     private final DeviceUsagePanel deviceUsagePanel;
     private final MusicSessionController musicSessionController;
     private final MusicPanel musicPanel;
+    private final WeatherDetailPanel weatherDetailPanel;
 
     private JWindow expandedWindow;
     private boolean isExpanding = false;
@@ -88,12 +92,26 @@ public class ExpandedIslandController {
 
     private Image cameraInUseIcon;
     private Image micInUseIcon;
+    /** 天气详情展开时替换右上角气温的返回图标（由 IslandWindow 加载注入） */
+    private Image returnIcon;
+    /** 天气详情手动刷新按钮图标（由 IslandWindow 加载注入） */
+    private Image refreshIcon;
+
+    // ── 天气详情卡片（点击天气条后窗口向下延伸展开） ──
+    /** 最近一次天气数据（null 表示获取失败/暂无数据），由 IslandWindow 在 EDT 推送 */
+    private WeatherInfo latestWeather;
+    /** 天气详情卡片当前是否处于展开态（含动画中） */
+    private boolean weatherDetailOpen = false;
+    private boolean weatherDetailAnimating = false;
+    /** 天气详情卡片延伸/收起动画定时器（持有引用：折叠/销毁时能及时停止） */
+    private Timer weatherDetailAnimTimer;
 
     public ExpandedIslandController(ExpandedIslandHost host) {
         this.host = host;
         this.musicSessionController = new MusicSessionController(this);
         this.musicPanel = new MusicPanel(musicSessionController);
         this.deviceUsagePanel = new DeviceUsagePanel(this);
+        this.weatherDetailPanel = new WeatherDetailPanel(this);
     }
 
     // ═══════════════════════════════════════════
@@ -121,6 +139,16 @@ public class ExpandedIslandController {
         deviceUsagePanel.updateUsage(camera, mic);
     }
 
+    /**
+     * 天气数据刷新回调（EDT），由 IslandWindow 转发；
+     * info 为 null 表示获取失败/暂无数据，天气条与详情卡片显示兜底状态。
+     */
+    public void onWeatherInfoChanged(WeatherInfo info) {
+        this.latestWeather = info;
+        deviceUsagePanel.updateWeather(info);
+        weatherDetailPanel.updateWeather(info);
+    }
+
     /** 电池状态回调（EDT），由 IslandWindow 转发 */
     public void onBatteryInfoChanged(BatteryMonitor.BatteryInfo info) {
         batteryPanel.updateBatteryInfo(info);
@@ -142,6 +170,33 @@ public class ExpandedIslandController {
         this.micInUseIcon = micIcon;
     }
 
+    /** 注入返回图标资源（由 IslandWindow 在加载图标后调用） */
+    public void setReturnIcon(Image icon) {
+        this.returnIcon = icon;
+    }
+
+    /** 注入刷新按钮图标资源（由 IslandWindow 在加载图标后调用） */
+    public void setRefreshIcon(Image icon) {
+        this.refreshIcon = icon;
+    }
+
+    /** 刷新按钮图标（供 WeatherDetailPanel 构建时使用） */
+    Image getRefreshIcon() {
+        return refreshIcon;
+    }
+
+    /**
+     * 天气详情卡片当前是否展开（供 DeviceUsagePanel 绘制时查询，EDT）
+     */
+    boolean isWeatherDetailOpen() {
+        return weatherDetailOpen;
+    }
+
+    /** 手动触发一次天气数据立即刷新；onDone 在刷新全部完成后于 EDT 回调（供刷新按钮恢复状态） */
+    void refreshWeatherNow(Runnable onDone) {
+        host.refreshWeatherNow(onDone);
+    }
+
     /** 停止各类定时器并触发收起（与窗口销毁配套） */
     public void dispose() {
         musicPanel.stopCoverRotation();
@@ -161,6 +216,14 @@ public class ExpandedIslandController {
             expandAnimTimer = null;
         }
         isExpanding = false;
+        // 终止天气详情卡片延伸动画并清理卡片面板
+        if (weatherDetailAnimTimer != null) {
+            weatherDetailAnimTimer.stop();
+            weatherDetailAnimTimer = null;
+        }
+        weatherDetailOpen = false;
+        weatherDetailAnimating = false;
+        weatherDetailPanel.clearPanel();
         if (expandedWindow != null && expandedWindow.isVisible()) {
             // 展开态销毁：折叠动画结束后再销毁窗口
             disposeWindowAfterCollapse = true;
@@ -200,6 +263,9 @@ public class ExpandedIslandController {
         // 重置卡片切换状态
         gestureSlideProgress = 0f;
         musicPanelShownInExpanded = false;
+
+        // 重置天气详情卡片状态（窗口内容随复用前的 removeAll 一并清除）
+        resetWeatherDetailState();
 
         // 展开动画起点采用主岛规范静态位置：宿主窗口经隐藏动画后会停在离屏球位
         // （runHideAnimation 收尾 setBounds 至 y=-ballSize 并 setVisible(false)），
@@ -259,7 +325,9 @@ public class ExpandedIslandController {
                         || bufferScaleX != sx || bufferScaleY != sy
                         || buffer.getWidth() < bufW || buffer.getHeight() < bufH) {
                     int maxBufW = Math.max(bufW, (int) Math.ceil(IslandUiStyle.EXPANDED_WIDTH * sx));
-                    int maxBufH = Math.max(bufH, (int) Math.ceil(IslandUiStyle.EXPANDED_HEIGHT * sy));
+                    // 按展开态最大尺寸（含天气详情向下无缝延伸高度）分配，延伸动画中不重新分配
+                    int extendedH = IslandUiStyle.EXPANDED_HEIGHT + IslandUiStyle.WEATHER_DETAIL_HEIGHT;
+                    int maxBufH = Math.max(bufH, (int) Math.ceil(extendedH * sy));
                     buffer = new BufferedImage(maxBufW, maxBufH, BufferedImage.TYPE_INT_ARGB);
                     bufferScaleX = sx;
                     bufferScaleY = sy;
@@ -275,8 +343,7 @@ public class ExpandedIslandController {
                     bg.setTransform(AffineTransform.getScaleInstance(sx, sy));
                     // 圆角几何统一内缩 1px：为 AA 过渡留出透明带，避免贴边绘制被窗口边界截断成台阶状硬边
                     Shape oldClip = bg.getClip();
-                    int arc = Math.max(0, h - 2);
-                    bg.setClip(new RoundRectangle2D.Float(1, 1, Math.max(0, w - 2), Math.max(0, h - 2), arc, arc));
+                    bg.setClip(buildWindowShape(w, h));
                     try {
                         // 背景 + 全部子卡片一次性合成进离屏画布
                         super.paint(bg);
@@ -301,11 +368,12 @@ public class ExpandedIslandController {
                     // 清除 paint() 传入的圆角 clip：背景填充需要完整的 AA 过渡像素，
                     // 否则边缘被硬边 clip 二次裁切，圆角退化成台阶状锯齿（主岛无 clip 故光滑）
                     g2d.setClip(null);
-                    // 与 paint() 的 clip 几何完全一致：统一内缩 1px，arc = 高 - 2 保持两端正半圆帽
+                    // 与 paint() 的 clip 使用同一几何：常态为药丸胶囊（arc = 高 - 2 保持两端正半圆帽）；
+                    // 天气详情向下延伸后为「顶部半圆帽 + 直边 + 底部统一圆角」的整体形状，
+                    // 背景一次性填充，药丸与延伸区无缝连为一体，连接处无割裂圆角/缝隙
                     int w = getWidth(), h = getHeight();
-                    int arc = Math.max(0, h - 2);
                     g2d.setColor(IslandUiStyle.DEEP_BLACK);
-                    g2d.fillRoundRect(1, 1, Math.max(0, w - 2), Math.max(0, h - 2), arc, arc);
+                    g2d.fill(buildWindowShape(w, h));
                 } finally {
                     g2d.dispose();
                 }
@@ -318,7 +386,9 @@ public class ExpandedIslandController {
 
         // 构建前清理已结束的设备使用状态残留，避免旧绿点/图标在新展开时闪现
         deviceUsagePanel.cleanupStaleUsageState();
-        deviceUsagePanel.build(cameraInUseIcon, micInUseIcon);
+        deviceUsagePanel.build(cameraInUseIcon, micInUseIcon, returnIcon);
+        // 应用最近一次天气数据：无数据时天气条显示"--°"兜底
+        deviceUsagePanel.updateWeather(latestWeather);
         panel.add(deviceUsagePanel.getPanel());
 
         expandedWindow.getContentPane().add(panel);
@@ -327,6 +397,12 @@ public class ExpandedIslandController {
         expandedWindow.addMouseWheelListener(e -> {
             int rotation = e.getWheelRotation();
             if (rotation == 0) return;
+            // 延伸动画期间不响应；天气详情展开时滚轮改为横向滚动 24 小时逐时预报，不再切卡
+            if (weatherDetailAnimating) return;
+            if (weatherDetailOpen) {
+                weatherDetailPanel.scrollHourly(rotation * 24);
+                return;
+            }
             if (rotation > 0) {
                 // 向下滚动 → 右滑 → 切换至音乐/占位面板
                 System.out.println("[IslandWindow] 滚轮向下 → 右滑，切换至音乐/占位面板");
@@ -430,6 +506,9 @@ public class ExpandedIslandController {
 
         // 捕获本地引用：动画期间窗口对象不再变化，避免与 dispose 流程竞争
         final JWindow win = expandedWindow;
+
+        // 收起前立即关闭天气详情卡片：恢复药丸规范高度，避免收起动画从扩展高度开始
+        closeWeatherDetailImmediate();
 
         // 终止仍在进行的展开动画：避免展开/折叠双 Timer 并存（dispose 或反向触发竞态）
         if (expandAnimTimer != null) {
@@ -718,7 +797,7 @@ public class ExpandedIslandController {
         }
     }
 
-    /** 按滑动进度同步定位各卡片（电池 / 占位 / 设备状态 / 音乐面板） */
+    /** 按滑动进度同步定位各卡片（电池 / 占位 / 设备状态 / 音乐面板 / 天气详情卡片） */
     void layoutExpandedPanel() {
         if (expandedWindow == null) return;
         Container cp = expandedWindow.getContentPane();
@@ -726,16 +805,22 @@ public class ExpandedIslandController {
         Component root = cp.getComponent(0);
         if (!(root instanceof JPanel)) return;
         JPanel rp = (JPanel) root;
-        int pw = rp.getWidth(), ph = rp.getHeight();
+        int pw = rp.getWidth();
+        // 天气详情卡片展开/收起时窗口向下延伸：各内容卡片仍锚定在上方药丸区域，不随高度漂移
+        int ph = (weatherDetailOpen || weatherDetailAnimating)
+                ? IslandUiStyle.EXPANDED_HEIGHT : rp.getHeight();
         Insets ins = rp.getInsets();
         if (ins == null) ins = new Insets(4, 8, 4, 12);
         int iw = pw - ins.left - ins.right, ih = ph - ins.top - ins.bottom;
         float progress = Math.max(0f, Math.min(1f, gestureSlideProgress));
         int offset = (int) (iw * progress);
+        // 逐帧同步切卡进度：天气条据此淡出/淡入（仅绘制层，不影响绿点/图标与布局预留）
+        deviceUsagePanel.setSlideProgress(progress);
 
         JPanel batteryPanelCmp = batteryPanel.getPanel();
         JPanel usagePanelCmp = deviceUsagePanel.getPanel();
         JPanel musicPanelCmp = musicPanel.getPanel();
+        JPanel weatherCardCmp = weatherDetailPanel.getPanel();
 
         for (Component c : rp.getComponents()) {
             if (c == batteryPanelCmp && batteryPanelCmp != null) {
@@ -750,9 +835,10 @@ public class ExpandedIslandController {
                 placeholderPanel.setBounds(ins.left + iw - offset, ins.top, iw, ih);
             } else if (c == usagePanelCmp && usagePanelCmp != null) {
                 Dimension pref = usagePanelCmp.getPreferredSize();
-                // 面板中心对齐右半圆圆心；若超窗则整体左移保证完整可见
+                // 绿点锚定右半圆圆心：面板左缘按天气条/图标预留宽度（getDotOffsetX）偏移；
+                // 若超窗则整体左移保证完整可见，绿点仍保持在圆心
                 int centerX = pw - IslandUiStyle.EXPANDED_HEIGHT / 2;
-                int x = centerX - pref.width / 2;
+                int x = centerX - deviceUsagePanel.getDotOffsetX();
                 if (x + pref.width > pw - ins.right) {
                     x = pw - ins.right - pref.width;
                 }
@@ -766,10 +852,144 @@ public class ExpandedIslandController {
                         ? usagePanelCmp.getPreferredSize().width + IslandUiStyle.USAGE_SLOT_GAP : 0;
                 int musicW = pw - ins.right - musicX - reserved;
                 musicPanelCmp.setBounds(musicX + iw - offset, ins.top, musicW, ih);
+            } else if (c == weatherCardCmp && weatherCardCmp != null) {
+                // 天气详情延伸区：全宽紧贴药丸底部无缝衔接（背景由窗口统一形状填充）
+                weatherCardCmp.setBounds(0, IslandUiStyle.EXPANDED_HEIGHT,
+                        pw, IslandUiStyle.WEATHER_DETAIL_HEIGHT);
             }
         }
         rp.revalidate();
         rp.repaint();
+    }
+
+    // ═══════════════════════════════════════
+    //  天气详情：点击天气条 → 扩展岛本体原位向下平滑延伸
+    // ═══════════════════════════════════════
+
+    /** 天气条点击：切换扩展岛向下延伸展开/收起天气详情（EDT） */
+    void toggleWeatherDetail() {
+        if (expandedWindow == null || !expandedWindow.isVisible()) return;
+        // 展开/收起主动画进行中不响应，避免双动画竞争窗口几何
+        if (isExpandingOrCollapsing() || weatherDetailAnimating) return;
+        animateWeatherDetail(!weatherDetailOpen);
+    }
+
+    /**
+     * 天气详情延伸动画：窗口位置与宽度不变，仅高度在药丸基础上向下平滑变化，
+     * 展开/收起过程即扩展岛本体在平滑变高（内容随窗口生长逐帧显现，无独立淡入淡出）。
+     */
+    private void animateWeatherDetail(boolean open) {
+        if (expandedWindow == null) return;
+        final JWindow win = expandedWindow;
+        weatherDetailAnimating = true;
+
+        final int baseH = IslandUiStyle.EXPANDED_HEIGHT;
+        final int fullH = baseH + IslandUiStyle.WEATHER_DETAIL_HEIGHT;
+        final int winX = win.getX();
+        final int winY = win.getY();
+        final int winW = win.getWidth();
+
+        if (open) {
+            // 提前置位：动画期间 layoutExpandedPanel 即按药丸高度锚定各内容卡片
+            weatherDetailOpen = true;
+            Container cp = win.getContentPane();
+            if (cp.getComponentCount() > 0 && cp.getComponent(0) instanceof JPanel) {
+                JPanel rp = (JPanel) cp.getComponent(0);
+                JPanel detail = weatherDetailPanel.build();
+                weatherDetailPanel.updateWeather(latestWeather);
+                rp.add(detail);
+                rp.revalidate();
+                layoutExpandedPanel();
+            }
+        }
+
+        final int fromH = open ? baseH : fullH;
+        final int toH = open ? fullH : baseH;
+        if (weatherDetailAnimTimer != null) {
+            weatherDetailAnimTimer.stop();
+        }
+        final long animStart = System.currentTimeMillis();
+        Timer timer = weatherDetailAnimTimer = new Timer(IslandUiStyle.EXPAND_ANIM_FRAME_MS, null);
+        timer.addActionListener(e -> {
+            float progress = Math.min((System.currentTimeMillis() - animStart)
+                    / (float) IslandUiStyle.WEATHER_DETAIL_ANIM_MS, 1.0f);
+            double eased = 1 - (1 - progress) * (1 - progress);
+            int curH = (int) (fromH + (toH - fromH) * eased);
+            win.setBounds(winX, winY, winW, curH);
+            if (progress >= 1.0f) {
+                ((Timer) e.getSource()).stop();
+                weatherDetailAnimTimer = null;
+                weatherDetailAnimating = false;
+                win.setBounds(winX, winY, winW, toH);
+                if (!open) {
+                    weatherDetailOpen = false;
+                    JPanel detail = weatherDetailPanel.getPanel();
+                    if (detail != null && detail.getParent() != null) {
+                        Container parent = detail.getParent();
+                        parent.remove(detail);
+                        parent.revalidate();
+                    }
+                    weatherDetailPanel.clearPanel();
+                }
+                layoutExpandedPanel();
+            }
+        });
+        timer.setInitialDelay(0);
+        timer.start();
+    }
+
+    /** 立即收起天气详情延伸（无动画）：收起/销毁扩展岛前调用，恢复药丸规范高度 */
+    private void closeWeatherDetailImmediate() {
+        if (weatherDetailAnimTimer != null) {
+            weatherDetailAnimTimer.stop();
+            weatherDetailAnimTimer = null;
+        }
+        weatherDetailAnimating = false;
+        boolean wasOpen = weatherDetailOpen;
+        weatherDetailOpen = false;
+        JPanel detail = weatherDetailPanel.getPanel();
+        if (detail != null && detail.getParent() != null) {
+            detail.getParent().remove(detail);
+        }
+        weatherDetailPanel.clearPanel();
+        if (wasOpen && expandedWindow != null && expandedWindow.isVisible()) {
+            expandedWindow.setSize(expandedWindow.getWidth(), IslandUiStyle.EXPANDED_HEIGHT);
+        }
+    }
+
+    /** 重置天气详情卡片状态（重新展开扩展岛时调用，窗口内容已随 removeAll 清除） */
+    private void resetWeatherDetailState() {
+        if (weatherDetailAnimTimer != null) {
+            weatherDetailAnimTimer.stop();
+            weatherDetailAnimTimer = null;
+        }
+        weatherDetailOpen = false;
+        weatherDetailAnimating = false;
+        weatherDetailPanel.clearPanel();
+    }
+
+    /**
+     * 构造窗口形状（背景填充与裁剪共用同一几何，均内缩 1px 保留 AA 透明带）：
+     * 常态为药丸胶囊；向下延伸后为「顶部药丸半圆帽 + 直边 + 底部统一圆角」，
+     * 三段并集形成连续轮廓，药丸与延伸区无缝连为一体。
+     */
+    private Shape buildWindowShape(int w, int h) {
+        if (h <= IslandUiStyle.EXPANDED_HEIGHT + 1) {
+            int arc = Math.max(0, h - 2);
+            return new RoundRectangle2D.Float(1, 1, Math.max(0, w - 2), Math.max(0, h - 2), arc, arc);
+        }
+        // 顶部半圆帽半径与药丸绘制高度一致，保证延伸前后顶部轮廓不变
+        float topR = (IslandUiStyle.EXPANDED_HEIGHT - 2) / 2f;
+        float botR = IslandUiStyle.WEATHER_BOTTOM_ARC;
+        Area area = new Area(new RoundRectangle2D.Float(
+                1, 1, Math.max(0, w - 2), topR * 2, topR * 2, topR * 2));
+        // 中部直边段覆盖顶部胶囊的下方圆角，使轮廓在连接处保持连续
+        area.add(new Area(new Rectangle2D.Float(
+                1, 1 + topR, Math.max(0, w - 2), Math.max(0, h - 2 - topR - botR))));
+        // 底部统一圆角收尾
+        area.add(new Area(new RoundRectangle2D.Float(
+                1, h - 1 - botR * 2, Math.max(0, w - 2), botR * 2, botR * 2, botR * 2)));
+        return area;
     }
 
     // ═══════════════════════════════════════════
@@ -783,6 +1003,12 @@ public class ExpandedIslandController {
             deviceAutoHideTimer = null;
             deviceAutoExpanded = false;
             if (!isVisible()) return;
+            if (weatherDetailOpen) {
+                // 用户正在查看天气详情：跳过超时隐藏，转入空闲自动收起巡检兼容后续回收
+                AppLogger.info("IslandWindow", "天气详情卡片展开中，跳过设备占用超时自动隐藏");
+                startIdleAutoCollapseTimer();
+                return;
+            }
             if (musicSessionController.isStrictlyPlaying()) {
                 // 音乐播放期间扩展岛保持常驻，跳过设备占用超时隐藏
                 AppLogger.info("IslandWindow", "音乐播放中，跳过设备占用超时自动隐藏");
@@ -866,6 +1092,7 @@ public class ExpandedIslandController {
         if (!AppConstants.isAutoCollapseExpandedEnabled()
                 || isLyricsShowing()
                 || isDeviceUsageIndicatorShowing()
+                || weatherDetailOpen
                 || isMusicPlaybackResident()) {
             // 任一阻断条件成立：重置空闲起点，不触发自动收起
             idleExpandSince = System.currentTimeMillis();
@@ -890,9 +1117,9 @@ public class ExpandedIslandController {
         return musicPanelShownInExpanded && musicSessionController.hasSession();
     }
 
-    /** 扩展岛当前是否显示摄像头/麦克风使用监测指示 */
+    /** 扩展岛当前是否显示摄像头/麦克风使用监测指示（面板因天气条常驻可见，须以实际指示内容为准） */
     private boolean isDeviceUsageIndicatorShowing() {
-        return deviceUsagePanel.isAnyUsage() || deviceUsagePanel.isPanelVisible();
+        return deviceUsagePanel.isAnyUsage() || deviceUsagePanel.hasUsageIndicatorContent();
     }
 
     // ── 包级状态访问器（供 MusicSessionController 读取） ──

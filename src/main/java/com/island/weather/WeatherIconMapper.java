@@ -188,39 +188,39 @@ public class WeatherIconMapper {
 
     private static void initCodeToCharMappings() {
         // QWeather icon 码 → Unicode Private Use Area 字符
-        // 映射来自 qweather-icons.css v1.8.0
-        CODE_TO_CHAR.put(100, '\uf101');   // 晴
-        CODE_TO_CHAR.put(101, '\uf102');   // 多云
-        CODE_TO_CHAR.put(102, '\uf103');   // 少云
-        CODE_TO_CHAR.put(103, '\uf104');   // 晴间多云
-        CODE_TO_CHAR.put(104, '\uf105');   // 阴
-        CODE_TO_CHAR.put(150, '\uf106');   // 晴-夜
-        CODE_TO_CHAR.put(151, '\uf107');   // 多云-夜
-        CODE_TO_CHAR.put(152, '\uf108');   // 少云-夜
-        CODE_TO_CHAR.put(153, '\uf109');   // 阴-夜
-        CODE_TO_CHAR.put(300, '\uf10a');   // 阵雨
-        CODE_TO_CHAR.put(301, '\uf10b');
-        CODE_TO_CHAR.put(302, '\uf10c');
-        CODE_TO_CHAR.put(303, '\uf10d');
-        CODE_TO_CHAR.put(304, '\uf10e');
-        CODE_TO_CHAR.put(305, '\uf10f');   // 小雨
-        CODE_TO_CHAR.put(306, '\uf110');   // 中雨
-        CODE_TO_CHAR.put(307, '\uf111');   // 大雨
-        CODE_TO_CHAR.put(308, '\uf112');   // 暴雨
-        CODE_TO_CHAR.put(309, '\uf113');   // 大暴雨
-        CODE_TO_CHAR.put(350, '\uf11d');   // 阵雨
-        CODE_TO_CHAR.put(351, '\uf11e');   // 大雨
-        CODE_TO_CHAR.put(399, '\uf11f');   // 雨
-        CODE_TO_CHAR.put(400, '\uf120');   // 小雪
-        CODE_TO_CHAR.put(401, '\uf121');   // 中雪
-        CODE_TO_CHAR.put(402, '\uf122');   // 大雪
-        CODE_TO_CHAR.put(403, '\uf123');   // 暴雪
-        CODE_TO_CHAR.put(500, '\uf12e');   // 雾/霾
-        CODE_TO_CHAR.put(501, '\uf12f');   // 雾
-        CODE_TO_CHAR.put(502, '\uf130');   // 霾
-        CODE_TO_CHAR.put(503, '\uf131');   // 扬沙
-        CODE_TO_CHAR.put(900, '\uf144');   // 热
-        CODE_TO_CHAR.put(901, '\uf145');   // 冷
-        CODE_TO_CHAR.put(999, '\uf146');   // 未知
+        // 映射来自 qweather-icons.css v1.8.0 的 -fill 填充系列
+        CODE_TO_CHAR.put(100, '\uf1cc');   // 晴-填充
+        CODE_TO_CHAR.put(101, '\uf1cd');   // 多云-填充
+        CODE_TO_CHAR.put(102, '\uf1ce');   // 少云-填充
+        CODE_TO_CHAR.put(103, '\uf1cf');   // 晴间多云-填充
+        CODE_TO_CHAR.put(104, '\uf1d0');   // 阴-填充
+        CODE_TO_CHAR.put(150, '\uf1d1');   // 晴-夜-填充
+        CODE_TO_CHAR.put(151, '\uf1d2');   // 多云-夜-填充
+        CODE_TO_CHAR.put(152, '\uf1d3');   // 少云-夜-填充
+        CODE_TO_CHAR.put(153, '\uf1d4');   // 阴-夜-填充
+        CODE_TO_CHAR.put(300, '\uf1d5');   // 阵雨-填充
+        CODE_TO_CHAR.put(301, '\uf1d6');   // 强阵雨-填充
+        CODE_TO_CHAR.put(302, '\uf1d7');   // 雷阵雨-填充
+        CODE_TO_CHAR.put(303, '\uf1d8');   // 强雷阵雨-填充
+        CODE_TO_CHAR.put(304, '\uf1d9');   // 雷阵雨伴有冰雹-填充
+        CODE_TO_CHAR.put(305, '\uf1da');   // 小雨-填充
+        CODE_TO_CHAR.put(306, '\uf1db');   // 中雨-填充
+        CODE_TO_CHAR.put(307, '\uf1dc');   // 大雨-填充
+        CODE_TO_CHAR.put(308, '\uf1dd');   // 暴雨-填充
+        CODE_TO_CHAR.put(309, '\uf1de');   // 大暴雨-填充
+        CODE_TO_CHAR.put(350, '\uf1e8');   // 阵雨-夜-填充
+        CODE_TO_CHAR.put(351, '\uf1e9');   // 强阵雨-夜-填充
+        CODE_TO_CHAR.put(399, '\uf1ea');   // 雨-填充
+        CODE_TO_CHAR.put(400, '\uf1eb');   // 小雪-填充
+        CODE_TO_CHAR.put(401, '\uf1ec');   // 中雪-填充
+        CODE_TO_CHAR.put(402, '\uf1ed');   // 大雪-填充
+        CODE_TO_CHAR.put(403, '\uf1ee');   // 暴雪-填充
+        CODE_TO_CHAR.put(500, '\uf1f9');   // 薄雾-填充
+        CODE_TO_CHAR.put(501, '\uf1fa');   // 雾-填充
+        CODE_TO_CHAR.put(502, '\uf1fb');   // 霾-填充
+        CODE_TO_CHAR.put(503, '\uf1fc');   // 扬沙-填充
+        CODE_TO_CHAR.put(900, '\uf207');   // 热-填充
+        CODE_TO_CHAR.put(901, '\uf208');   // 冷-填充
+        CODE_TO_CHAR.put(999, '\uf209');   // 未知-填充
     }
 }

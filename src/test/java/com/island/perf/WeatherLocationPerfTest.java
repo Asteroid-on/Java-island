@@ -2,7 +2,7 @@ package com.island.perf;
 
 import com.island.util.WindowsLocationProvider;
 import com.island.weather.JuheWeatherService;
-import com.island.weather.OpenMeteoWeatherService;
+import com.island.weather.CaiYunWeatherService;
 import com.island.weather.HybridWeatherService;
 import com.island.weather.WeatherInfo;
 
@@ -20,8 +20,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * 覆盖：
  * - WindowsLocationProvider：EXE 编译缓存命中、10 分钟结果缓存命中率、
  *   未命中时的原生进程调用耗时（含超时行为）
- * - JuheWeatherService / OpenMeteoWeatherService 真实 HTTP 请求耗时
- * - HybridWeatherService 降级行为（聚合失败 → Open-Meteo 兜底的触发时延）
+ * - JuheWeatherService 真实 HTTP 请求耗时
+ * - CaiYunWeatherService 真实 HTTP 请求耗时（含逐时/每日解析）
+ * - HybridWeatherService 双源合并推送行为（聚合实时 + 彩云逐时）
  */
 public class WeatherLocationPerfTest {
 
@@ -84,45 +85,53 @@ public class WeatherLocationPerfTest {
         }
         juhe.stop();
 
-        // ═══ 3. OpenMeteoWeatherService 真实请求 ═══
-        PerfUtil.header("Open-Meteo 天气服务（真实 HTTP）");
-        AtomicLong omMs = new AtomicLong(-1);
-        CountDownLatch omDone = new CountDownLatch(1);
-        OpenMeteoWeatherService om = new OpenMeteoWeatherService();
-        long omStart = System.nanoTime();
-        om.setListener(new OpenMeteoWeatherService.WeatherListener() {
+        // ═══ 3. CaiYunWeatherService 真实请求 ═══
+        PerfUtil.header("彩云天气服务（真实 HTTP）");
+        AtomicLong cyMs = new AtomicLong(-1);
+        CountDownLatch cyDone = new CountDownLatch(1);
+        CaiYunWeatherService cy = new CaiYunWeatherService();
+        long cyStart = System.nanoTime();
+        cy.setListener(new CaiYunWeatherService.WeatherListener() {
             @Override public void onWeatherUpdated(WeatherInfo weather) {
-                omMs.set((System.nanoTime() - omStart) / 1_000_000);
-                System.out.printf("[PERF] Open-Meteo成功: %s %.1f°C %s%n", weather.getLocation(), weather.getTemperature(), weather.getCondition());
-                omDone.countDown();
+                cyMs.set((System.nanoTime() - cyStart) / 1_000_000);
+                System.out.printf("[PERF] 彩云成功: %s %.1f°C %s（逐时%d项/每日%d项，空气质量%d %s，紫外线%.0f %s）%n",
+                        weather.getLocation(), weather.getTemperature(), weather.getCondition(),
+                        weather.getHourlyForecasts().size(), weather.getDailyForecasts().size(),
+                        weather.getAirQualityIndex(), weather.getAirQualityDesc(),
+                        weather.getUvIndex(), weather.getUvDesc());
+                cyDone.countDown();
             }
             @Override public void onWeatherError(String error) {
-                omMs.set((System.nanoTime() - omStart) / 1_000_000);
-                System.out.println("[PERF] Open-Meteo失败: " + error);
-                omDone.countDown();
+                cyMs.set((System.nanoTime() - cyStart) / 1_000_000);
+                System.out.println("[PERF] 彩云失败: " + error);
+                cyDone.countDown();
             }
         });
-        om.start();
-        if (omDone.await(60, TimeUnit.SECONDS)) {
-            System.out.printf("[PERF] Open-Meteo端到端耗时: %.1fms%n", omMs.get() / 1.0);
+        cy.start();
+        if (cyDone.await(60, TimeUnit.SECONDS)) {
+            System.out.printf("[PERF] 彩云端到端耗时: %.1fms%n", cyMs.get() / 1.0);
         } else {
-            System.out.println("[PERF] Open-Meteo 60s 超时未返回");
+            System.out.println("[PERF] 彩云 60s 超时未返回");
         }
-        om.stop();
+        cy.stop();
 
-        // ═══ 4. Hybrid 降级路径时序 ═══
-        PerfUtil.header("HybridWeatherService 降级路径");
+        // ═══ 4. Hybrid 双源合并推送 ═══
+        PerfUtil.header("HybridWeatherService 合并推送（聚合 + 彩云）");
         long hStart = System.nanoTime();
         HybridWeatherService hybrid = new HybridWeatherService();
         CountDownLatch hDone = new CountDownLatch(1);
         hybrid.setListener(new HybridWeatherService.WeatherListener() {
             @Override public void onWeatherUpdated(WeatherInfo weather) {
-                System.out.printf("[PERF] Hybrid最终成功(%.1fms): %s %.1f°C%n",
-                        (System.nanoTime() - hStart) / 1e6, weather.getLocation(), weather.getTemperature());
-                hDone.countDown();
+                System.out.printf("[PERF] Hybrid合并推送(%.1fms): %s %.1f°C 逐时%d项 每日%d项%n",
+                        (System.nanoTime() - hStart) / 1e6, weather.getLocation(), weather.getTemperature(),
+                        weather.getHourlyForecasts().size(), weather.getDailyForecasts().size());
+                // 逐时与每日均到位后结束等待（验证彩云数据成功并入）
+                if (!weather.getHourlyForecasts().isEmpty() && !weather.getDailyForecasts().isEmpty()) {
+                    hDone.countDown();
+                }
             }
             @Override public void onWeatherError(String error) {
-                System.out.printf("[PERF] Hybrid最终失败(%.1fms): %s%n", (System.nanoTime() - hStart) / 1e6, error);
+                System.out.printf("[PERF] Hybrid失败(%.1fms): %s%n", (System.nanoTime() - hStart) / 1e6, error);
                 hDone.countDown();
             }
         });

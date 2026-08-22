@@ -24,4 +24,10 @@ public interface ExpandedIslandHost {
      * slideUp=false 表示收缩回主岛（对称反向动画），需恢复主岛时间显示。
      */
     void onCollapseFinished(boolean slideUp);
+
+    /**
+     * 手动触发一次天气数据立即刷新（不改变每小时定时自动刷新机制）。
+     * onDone 在刷新全部结束后于 EDT 回调（用于恢复刷新按钮可点击状态）。
+     */
+    void refreshWeatherNow(Runnable onDone);
 }

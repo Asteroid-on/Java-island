@@ -1,9 +1,11 @@
 package com.island.weather;
 
 import com.island.config.AppConfig;
+import com.island.util.AmapGeocoder;
 import com.island.util.CityCoordinateTable;
 import com.island.util.AppLogger;
 import com.island.util.WindowsLocationProvider;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -12,12 +14,15 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 聚合数据天气服务 — 使用聚合数据API获取实时天气。
+ * 聚合数据天气服务 — 使用聚合数据API获取实时天气与多日预报，是应用唯一天气数据源。
  */
 public class JuheWeatherService {
 
@@ -27,7 +32,7 @@ public class JuheWeatherService {
 
     /**
      * API Key：优先级 系统属性 juhe.api.key → classpath config.properties → 空字符串。
-     * 为空时直接触发 onWeatherError，由 HybridWeatherService 降级到 Open-Meteo。
+     * 为空时直接触发 onWeatherError，UI 层显示兑底状态。
      */
     private static final String API_KEY = AppConfig.get("juhe.api.key", "");
     private static final String API_URL = "https://apis.juhe.cn/simpleWeather/query";
@@ -63,6 +68,29 @@ public class JuheWeatherService {
     public void stop() {
         running = false;
         scheduler.shutdown();
+    }
+
+    /**
+     * 手动触发一次立即刷新：与定时刷新共用同一单线程调度器排队执行，
+     * 不会产生并发请求；完成后在调度线程回调 onComplete（未运行时直接回调）。
+     */
+    public void refreshNow(Runnable onComplete) {
+        if (!running) {
+            if (onComplete != null) onComplete.run();
+            return;
+        }
+        try {
+            scheduler.schedule(() -> {
+                try {
+                    fetchWeather();
+                } finally {
+                    if (onComplete != null) onComplete.run();
+                }
+            }, 0, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException e) {
+            // 与 stop() 竞态：running 检查后调度器刚被关闭，任务被拒绝时直接回调避免刷新按钮永久禁用
+            if (onComplete != null) onComplete.run();
+        }
     }
 
     /** 守护线程调度器：应用退出时不阻塞 JVM，stop() 后可重建复用。 */
@@ -105,8 +133,20 @@ public class JuheWeatherService {
                 double temperature = Double.parseDouble(realtime.optString("temperature", "0"));
                 String condition = realtime.optString("info", "未知");
 
+                // 聚合数据未提供体感温度；湿度可能带 "%" 后缀，解析失败保留 NaN
+                double humidity = Double.NaN;
+                String humidityStr = realtime.optString("humidity", "").replace("%", "").trim();
+                if (!humidityStr.isEmpty()) {
+                    try {
+                        humidity = Double.parseDouble(humidityStr);
+                    } catch (NumberFormatException ignored) {
+                        // 湿度格式异常时保留 NaN，UI 层显示兜底文案
+                    }
+                }
+
                 if (listener != null)
-                    listener.onWeatherUpdated(new WeatherInfo(cityName, temperature, condition));
+                    listener.onWeatherUpdated(new WeatherInfo(getDisplayCityName(), temperature, condition, -1, Double.NaN, humidity,
+                            null, parseDailyForecasts(result)));
             } else {
                 handleError("HTTP " + response.statusCode());
             }
@@ -127,6 +167,53 @@ public class JuheWeatherService {
         }
         AppLogger.warn("Weather", "聚合数据定位失败，使用默认: " + CityCoordinateTable.DEFAULT_CITY);
         return CityCoordinateTable.DEFAULT_CITY;
+    }
+
+    /** 显示地名：区级优先（高德逆地理编码返回"市 区"），失败回退市级（与聚合请求参数一致） */
+    private String getDisplayCityName() {
+        WindowsLocationProvider.LocationResult result = WindowsLocationProvider.getLocation();
+        if (result != null) {
+            String district = AmapGeocoder.lookupDistrict(result.latitude, result.longitude);
+            if (district != null) {
+                System.out.printf("[聚合数据] 显示地名: %s%n", district);
+                return district;
+            }
+        }
+        return getCityName();
+    }
+
+    /**
+     * 解析多日预报（result.future）：温度形如 "17/30"（最低/最高），
+     * 聚合数据无逐时预报，hourly 留空。解析失败项以 NaN 兜底。
+     */
+    private List<DailyForecast> parseDailyForecasts(JSONObject result) {
+        List<DailyForecast> list = new ArrayList<>();
+        JSONArray future = result.optJSONArray("future");
+        if (future == null) {
+            return list;
+        }
+        int n = Math.min(7, future.length());
+        for (int i = 0; i < n; i++) {
+            JSONObject day = future.optJSONObject(i);
+            if (day == null) {
+                continue;
+            }
+            double min = Double.NaN;
+            double max = Double.NaN;
+            // 温度区间形如 "17/30℃"：最高温带 ℃ 后缀，需剥离非数字字符再解析
+            String[] parts = day.optString("temperature", "").split("/");
+            if (parts.length == 2) {
+                try {
+                    min = Double.parseDouble(parts[0].replaceAll("[^0-9.\\-]", ""));
+                    max = Double.parseDouble(parts[1].replaceAll("[^0-9.\\-]", ""));
+                } catch (NumberFormatException ignored) {
+                    // 温度区间格式异常时保留 NaN，UI 层显示兜底文案
+                }
+            }
+            list.add(DailyForecast.ofCondition(day.optString("date", ""),
+                    day.optString("weather", ""), min, max));
+        }
+        return list;
     }
 
 

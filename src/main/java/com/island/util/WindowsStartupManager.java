@@ -413,7 +413,7 @@ public final class WindowsStartupManager {
 
         // 5. 绝对兜底
         return userDir + File.separator + "target"
-                + File.separator + "Java-island-1.0.1.jar";
+                + File.separator + "Java-island-1.1.jar";
     }
 
     // ═══════════════════════════════════════════

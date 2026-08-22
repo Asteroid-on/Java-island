@@ -68,6 +68,31 @@ public final class IslandUiStyle {
     public static final int USAGE_SLOT_GAP = 6;
     public static final int USAGE_PANEL_PAD = 6;
 
+    // ── 扩展岛天气区域与天气详情延伸区 ──
+    /** 天气条图标字号（与主岛天气图标一致，QWeather 图标字体） */
+    public static final int WEATHER_ICON_SIZE = 12;
+    /** 天气详情展开时右上角返回图标尺寸（替换上行温度文字） */
+    public static final int WEATHER_RETURN_ICON_SIZE = 20;
+    /** 天气详情手动刷新按钮图标尺寸 */
+    public static final int WEATHER_REFRESH_ICON_SIZE = 20;
+    /** 天气条与绿点/设备图标之间的最小间距 */
+    public static final int WEATHER_TO_DOT_GAP = 10;
+    /** 天气详情延伸高度：窗口在药丸基础上向下无缝延伸的高度（全宽连为一体） */
+    public static final int WEATHER_DETAIL_HEIGHT = 560;
+    /** 延伸形态的底部圆角半径（顶部保持药丸半圆帽） */
+    public static final int WEATHER_BOTTOM_ARC = 24;
+    /** 天气详情向下延伸/收起动画时长 */
+    public static final int WEATHER_DETAIL_ANIM_MS = 300;
+    public static final Font WEATHER_CARD_TITLE_FONT = new Font("Microsoft YaHei", Font.PLAIN, 13);
+    public static final Font WEATHER_CARD_TEMP_FONT = new Font("Microsoft YaHei", Font.BOLD, 32);
+    public static final Font WEATHER_CARD_INFO_FONT = new Font("Microsoft YaHei", Font.PLAIN, 14);
+    /** 逐时预报时间标签字体 */
+    public static final Font WEATHER_FORECAST_TIME_FONT = new Font("Microsoft YaHei", Font.PLAIN, 12);
+    /** 逐时预报温度字体 */
+    public static final Font WEATHER_FORECAST_TEMP_FONT = new Font("Microsoft YaHei", Font.BOLD, 14);
+    /** 多日预报行字体 */
+    public static final Font WEATHER_DAILY_FONT = new Font("Microsoft YaHei", Font.PLAIN, 14);
+
     // ── 自动弹出/收起时长 ──
     /** 设备占用自动弹出扩展岛后保持显示的时长 */
     public static final int DEVICE_AUTO_HIDE_MS = 5000;

@@ -38,7 +38,7 @@ public final class WindowsLocationProvider {
 
     private static final int LOCATION_TIMEOUT_SEC = 12;
 
-    /** 定位结果缓存：10 分钟内复用，避免聚合与 Open-Meteo 两路重复拉起定位 EXE */
+    /** 定位结果缓存：10 分钟内复用，避免天气刷新重复拉起定位 EXE */
     private static final long LOCATION_CACHE_TTL_MS = 10 * 60 * 1000;
     private static volatile LocationResult cachedLocation;
     private static volatile long cachedLocationAt;

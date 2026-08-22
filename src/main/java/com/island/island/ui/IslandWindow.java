@@ -82,7 +82,7 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
     private volatile boolean showingWifiNotification = false;
     private transient SystemTrayManager trayManager;
     private transient WifiMonitor wifiMonitor;
-    private transient HybridWeatherService weatherMonitor;
+        private transient HybridWeatherService weatherMonitor;
     private transient MusicMonitor musicMonitor;
     private transient BatteryMonitor batteryMonitor;
     private transient PrivacyMonitor privacyMonitor;
@@ -91,6 +91,10 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
     private transient Image wifiIcon;
     private transient Image cameraInUseIcon;
     private transient Image micInUseIcon;
+    /** 天气详情展开时右上角返回图标 */
+    private transient Image returnIcon;
+    /** 天气详情手动刷新按钮图标 */
+    private transient Image refreshIcon;
 
     private JPanel animPanel;
     private JPanel weatherPanel;
@@ -258,6 +262,16 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
             setVisible(true);
             updateTextVisibility();
         }
+    }
+
+    @Override
+    public void refreshWeatherNow(Runnable onDone) {
+        HybridWeatherService monitor = weatherMonitor;
+        if (monitor == null || onDone == null) {
+            return;
+        }
+        // 刷新完成回调在工作线程触发，切回 EDT 再恢复刷新按钮状态
+        monitor.refreshNow(() -> SwingUtilities.invokeLater(onDone));
     }
 
     // ═══════════════════════════════════════════
@@ -538,6 +552,9 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
                     }
                     weatherIconLabel.setText(String.valueOf(iconChar));
 
+                    // 同步刷新扩展岛天气条与天气详情卡片
+                    expandedController.onWeatherInfoChanged(weather);
+
                     if (!isNotificationActive && !isFinishingNotification && isVisible()) {
                         weatherPanel.setVisible(true);
                     }
@@ -553,6 +570,8 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
                     weatherTempLabel.setText("--°");
                     weatherConditionLabel.setText("错误");
                     weatherIconLabel.setText(String.valueOf(WeatherIconMapper.getIconChar("未知")));
+                    // 扩展岛天气条与详情卡片进入兜底状态
+                    expandedController.onWeatherInfoChanged(null);
                     if (!isNotificationActive && !isFinishingNotification && isVisible()) {
                         weatherPanel.setVisible(true);
                     }
@@ -917,7 +936,11 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
         wifiIcon = loadImage("/icons/wifi.png");
         cameraInUseIcon = loadImage("/icons/摄像头使用中.png");
         micInUseIcon = loadImage("/icons/麦克风使用中.png");
+        returnIcon = loadImage("/icons/返回_return.png");
+        refreshIcon = loadImage("/icons/刷新_refresh.png");
         expandedController.setUsageIcons(cameraInUseIcon, micInUseIcon);
+        expandedController.setReturnIcon(returnIcon);
+        expandedController.setRefreshIcon(refreshIcon);
     }
 
     private void cleanupImageResources() {
@@ -929,5 +952,9 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
         cameraInUseIcon = null;
         flushImage(micInUseIcon);
         micInUseIcon = null;
+        flushImage(returnIcon);
+        returnIcon = null;
+        flushImage(refreshIcon);
+        refreshIcon = null;
     }
 }
