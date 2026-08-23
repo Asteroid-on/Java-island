@@ -10,6 +10,7 @@ import com.island.music.model.MusicInfo;
 import com.island.util.AnimationUtil;
 import com.island.util.AppLogger;
 import com.island.util.ScreenUtil;
+import com.island.util.Win32WindowUtil;
 import com.island.weather.WeatherInfo;
 
 import javax.swing.JLabel;
@@ -59,7 +60,10 @@ public class ExpandedIslandController {
     private final MusicPanel musicPanel;
     private final WeatherDetailPanel weatherDetailPanel;
 
-    private JWindow expandedWindow;
+    /** 扩展岛窗口；volatile：EDT 创建/销毁，MouseInfoMonitor 轮询线程跨线程读取重申置顶 */
+    private volatile JWindow expandedWindow;
+    /** 扩展岛根绘制面板（含 HiDPI 离屏缓冲）：跨展开复用，避免每次展开重建面板并重新分配展开态最大尺寸缓冲 */
+    private JPanel rootPanel;
     private boolean isExpanding = false;
     private boolean isCollapsing = false;
     /** dispose() 触发的折叠完成后是否销毁窗口（正常折叠仅隐藏复用） */
@@ -132,6 +136,11 @@ public class ExpandedIslandController {
 
     public boolean isVisible() {
         return expandedWindow != null && expandedWindow.isVisible();
+    }
+
+    /** 扩展岛窗口（可能为 null，尚未创建时）；供外部重申不抢焦点置顶 */
+    public JWindow getExpandedWindow() {
+        return expandedWindow;
     }
 
     /** 摄像头/麦克风使用状态回调（EDT），由 IslandWindow 转发 */
@@ -292,6 +301,128 @@ public class ExpandedIslandController {
         expandedWindow.setLocation(startX, startY);
         expandedWindow.setSize(startW, startH);
 
+        // 根绘制面板（含 HiDPI 离屏缓冲）跨展开复用：仅清空子组件，避免每次展开重建面板
+        // 并重新分配展开态最大尺寸的离屏缓冲（200% 缩放约 4.4MB，开销落在展开首帧）
+        if (rootPanel == null) {
+            rootPanel = createRootPanel();
+        } else {
+            rootPanel.removeAll();
+        }
+
+        JPanel battPnl = batteryPanel.build();
+        rootPanel.add(battPnl);
+
+        // 构建前清理已结束的设备使用状态残留，避免旧绿点/图标在新展开时闪现
+        deviceUsagePanel.cleanupStaleUsageState();
+        deviceUsagePanel.build(cameraInUseIcon, micInUseIcon, returnIcon);
+        // 应用最近一次天气数据：无数据时天气条显示"--°"兜底
+        deviceUsagePanel.updateWeather(latestWeather);
+        rootPanel.add(deviceUsagePanel.getPanel());
+
+        expandedWindow.getContentPane().add(rootPanel);
+
+        // ── 滚轮监听：向下滚动 = 右滑（显示右侧卡片），向上滚动 = 左滑（返回左侧卡片）──
+        expandedWindow.addMouseWheelListener(e -> {
+            int rotation = e.getWheelRotation();
+            if (rotation == 0) return;
+            // 延伸动画期间不响应；天气详情展开时滚轮改为横向滚动 24 小时逐时预报，不再切卡
+            if (weatherDetailAnimating) return;
+            if (weatherDetailOpen) {
+                weatherDetailPanel.scrollHourly(rotation * 24);
+                return;
+            }
+            if (rotation > 0) {
+                // 向下滚动 → 右滑 → 切换至音乐/占位面板
+                System.out.println("[IslandWindow] 滚轮向下 → 右滑，切换至音乐/占位面板");
+                showMusicPanelInExpanded();
+            } else if (musicPanelShownInExpanded) {
+                // 向上滚动 → 左滑 → 返回电池卡片
+                System.out.println("[IslandWindow] 滚轮向上 → 左滑，返回电池卡片");
+                musicPanelShownInExpanded = false;
+                startSlideAnimation(0f);
+            }
+        });
+
+        // ── 单击：折叠扩展岛（与滚轮切换互不冲突）──
+        expandedWindow.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                hideByUser();
+            }
+        });
+
+        expandedWindow.setVisible(true);
+        // 不抢焦点置顶：游戏全屏/无边框窗口场景下扩展岛盖在游戏之上且不引发焦点大战
+        Win32WindowUtil.topmostNoActivate(expandedWindow);
+
+        if (expandAnimTimer != null) {
+            expandAnimTimer.stop();
+            expandAnimTimer = null;
+        }
+        Timer expandTimer = expandAnimTimer = new Timer(IslandUiStyle.expandAnimFrameMs(), null);
+        final long animStart = System.nanoTime();
+        expandTimer.addActionListener(e -> {
+            // 每帧重申置顶：展开动画期间游戏激活会把 TOPMOST 窗口重排到自己之上
+            Win32WindowUtil.topmostNoActivate(expandedWindow);
+            float elapsed = System.nanoTime() - animStart;
+            float progress = Math.min(elapsed / (IslandUiStyle.EXPAND_ANIM_DURATION_MS * 1_000_000f), 1.0f);
+            double eased = 1 - (1 - progress) * (1 - progress);
+
+            int curW = (int) (startW + (IslandUiStyle.EXPANDED_WIDTH - startW) * eased);
+            int curH = (int) (startH + (targetH - startH) * eased);
+            int curX = (int) (startX + (targetX - startX) * eased);
+            int curY = (int) (startY + (targetY - startY) * eased);
+
+            // 整数截断下几何可能与当前一致：跳过冗余 setBounds，减少无效原生 resize 与重绘
+            Rectangle cur = expandedWindow.getBounds();
+            if (cur.x != curX || cur.y != curY || cur.width != curW || cur.height != curH) {
+                expandedWindow.setBounds(curX, curY, curW, curH);
+            }
+
+            if (progress >= 1.0f) {
+                ((Timer) e.getSource()).stop();
+                expandAnimTimer = null;
+                expandedWindow.setBounds(targetX, targetY, IslandUiStyle.EXPANDED_WIDTH, targetH);
+                isExpanding = false;
+                layoutExpandedPanel();
+                deviceUsagePanel.startOrStopUsageAnimTimer();
+                // 设备占用触发的自动弹出：展开完成后再显示图标，并启动 5 秒自动隐藏计时
+                if (deviceAutoExpanded) {
+                    deviceUsagePanel.applyUsageStates();
+                    if (musicSessionController.isStrictlyPlaying()) {
+                        // 音乐播放中：取消设备 5 秒自动隐藏，改为展示音乐面板常驻
+                        cancelDeviceAutoHideTimer();
+                        deviceAutoExpanded = false;
+                        musicAutoExpanded = true;
+                        SwingUtilities.invokeLater(() -> {
+                            musicPanelAutoShownForSession = true;
+                            showMusicPanelInExpanded();
+                        });
+                    } else {
+                        startDeviceAutoHideTimer();
+                    }
+                } else if (musicAutoExpanded) {
+                    // 音乐自动弹出：展开完成后展示音乐面板（封面/歌词/歌名）
+                    SwingUtilities.invokeLater(() -> {
+                        musicPanelAutoShownForSession = true;
+                        showMusicPanelInExpanded();
+                    });
+                } else if (userInitiated) {
+                    // 用户主动展开：启动空闲自动收起巡检（勾选设置后生效）
+                    startIdleAutoCollapseTimer();
+                }
+            }
+        });
+        expandTimer.setInitialDelay(0);
+        expandTimer.start();
+    }
+
+    /**
+     * 构造扩展岛根绘制面板：手动双缓冲离屏画布 + 圆角裁剪 + 统一背景形状填充。
+     * 面板实例与 HiDPI 离屏缓冲跨展开复用（show() 仅清空子组件）；窗口形状按 (w,h) 缓存，
+     * 同一帧内 paint/paintComponent 复用同一 Shape，动画期间避免每帧重复构造几何对象。
+     */
+    private JPanel createRootPanel() {
         JPanel panel = new JPanel(null) {
             /** 手动双缓冲离屏画布：per-pixel 透明窗口无 Swing 默认双缓冲，
              *  直写屏幕会暴露“背景先清、卡片后画”的中间态，导致切换时背景闪烁 */
@@ -299,6 +430,20 @@ public class ExpandedIslandController {
             /** 缓冲区对应的设备缩放倍率（HiDPI）：与当前屏幕变换不一致时按新倍率重建，自适应跨屏/改缩放 */
             private double bufferScaleX = 1.0;
             private double bufferScaleY = 1.0;
+            /** 窗口形状缓存：同尺寸帧间复用，避免每帧重复构造 RoundRectangle2D/Area */
+            private int cachedShapeW = -1;
+            private int cachedShapeH = -1;
+            private Shape cachedShape;
+
+            /** 按当前尺寸返回窗口形状（仅尺寸变化时才重建） */
+            private Shape shapeFor(int w, int h) {
+                if (w != cachedShapeW || h != cachedShapeH) {
+                    cachedShape = buildWindowShape(w, h);
+                    cachedShapeW = w;
+                    cachedShapeH = h;
+                }
+                return cachedShape;
+            }
 
             @Override
             public void paint(Graphics g) {
@@ -343,7 +488,7 @@ public class ExpandedIslandController {
                     bg.setTransform(AffineTransform.getScaleInstance(sx, sy));
                     // 圆角几何统一内缩 1px：为 AA 过渡留出透明带，避免贴边绘制被窗口边界截断成台阶状硬边
                     Shape oldClip = bg.getClip();
-                    bg.setClip(buildWindowShape(w, h));
+                    bg.setClip(shapeFor(w, h));
                     try {
                         // 背景 + 全部子卡片一次性合成进离屏画布
                         super.paint(bg);
@@ -373,112 +518,14 @@ public class ExpandedIslandController {
                     // 背景一次性填充，药丸与延伸区无缝连为一体，连接处无割裂圆角/缝隙
                     int w = getWidth(), h = getHeight();
                     g2d.setColor(IslandUiStyle.DEEP_BLACK);
-                    g2d.fill(buildWindowShape(w, h));
+                    g2d.fill(shapeFor(w, h));
                 } finally {
                     g2d.dispose();
                 }
             }
         };
         panel.setOpaque(false);
-
-        JPanel battPnl = batteryPanel.build();
-        panel.add(battPnl);
-
-        // 构建前清理已结束的设备使用状态残留，避免旧绿点/图标在新展开时闪现
-        deviceUsagePanel.cleanupStaleUsageState();
-        deviceUsagePanel.build(cameraInUseIcon, micInUseIcon, returnIcon);
-        // 应用最近一次天气数据：无数据时天气条显示"--°"兜底
-        deviceUsagePanel.updateWeather(latestWeather);
-        panel.add(deviceUsagePanel.getPanel());
-
-        expandedWindow.getContentPane().add(panel);
-
-        // ── 滚轮监听：向下滚动 = 右滑（显示右侧卡片），向上滚动 = 左滑（返回左侧卡片）──
-        expandedWindow.addMouseWheelListener(e -> {
-            int rotation = e.getWheelRotation();
-            if (rotation == 0) return;
-            // 延伸动画期间不响应；天气详情展开时滚轮改为横向滚动 24 小时逐时预报，不再切卡
-            if (weatherDetailAnimating) return;
-            if (weatherDetailOpen) {
-                weatherDetailPanel.scrollHourly(rotation * 24);
-                return;
-            }
-            if (rotation > 0) {
-                // 向下滚动 → 右滑 → 切换至音乐/占位面板
-                System.out.println("[IslandWindow] 滚轮向下 → 右滑，切换至音乐/占位面板");
-                showMusicPanelInExpanded();
-            } else if (musicPanelShownInExpanded) {
-                // 向上滚动 → 左滑 → 返回电池卡片
-                System.out.println("[IslandWindow] 滚轮向上 → 左滑，返回电池卡片");
-                musicPanelShownInExpanded = false;
-                startSlideAnimation(0f);
-            }
-        });
-
-        // ── 单击：折叠扩展岛（与滚轮切换互不冲突）──
-        expandedWindow.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                hideByUser();
-            }
-        });
-
-        expandedWindow.setVisible(true);
-
-        if (expandAnimTimer != null) {
-            expandAnimTimer.stop();
-            expandAnimTimer = null;
-        }
-        Timer expandTimer = expandAnimTimer = new Timer(IslandUiStyle.EXPAND_ANIM_FRAME_MS, null);
-        final long animStart = System.currentTimeMillis();
-        expandTimer.addActionListener(e -> {
-            float elapsed = System.currentTimeMillis() - animStart;
-            float progress = Math.min(elapsed / IslandUiStyle.EXPAND_ANIM_DURATION_MS, 1.0f);
-            double eased = 1 - (1 - progress) * (1 - progress);
-
-            int curW = (int) (startW + (IslandUiStyle.EXPANDED_WIDTH - startW) * eased);
-            int curH = (int) (startH + (targetH - startH) * eased);
-            int curX = (int) (startX + (targetX - startX) * eased);
-            int curY = (int) (startY + (targetY - startY) * eased);
-
-            expandedWindow.setBounds(curX, curY, curW, curH);
-
-            if (progress >= 1.0f) {
-                ((Timer) e.getSource()).stop();
-                expandAnimTimer = null;
-                expandedWindow.setBounds(targetX, targetY, IslandUiStyle.EXPANDED_WIDTH, targetH);
-                isExpanding = false;
-                layoutExpandedPanel();
-                deviceUsagePanel.startOrStopUsageAnimTimer();
-                // 设备占用触发的自动弹出：展开完成后再显示图标，并启动 5 秒自动隐藏计时
-                if (deviceAutoExpanded) {
-                    deviceUsagePanel.applyUsageStates();
-                    if (musicSessionController.isStrictlyPlaying()) {
-                        // 音乐播放中：取消设备 5 秒自动隐藏，改为展示音乐面板常驻
-                        cancelDeviceAutoHideTimer();
-                        deviceAutoExpanded = false;
-                        musicAutoExpanded = true;
-                        SwingUtilities.invokeLater(() -> {
-                            musicPanelAutoShownForSession = true;
-                            showMusicPanelInExpanded();
-                        });
-                    } else {
-                        startDeviceAutoHideTimer();
-                    }
-                } else if (musicAutoExpanded) {
-                    // 音乐自动弹出：展开完成后展示音乐面板（封面/歌词/歌名）
-                    SwingUtilities.invokeLater(() -> {
-                        musicPanelAutoShownForSession = true;
-                        showMusicPanelInExpanded();
-                    });
-                } else if (userInitiated) {
-                    // 用户主动展开：启动空闲自动收起巡检（勾选设置后生效）
-                    startIdleAutoCollapseTimer();
-                }
-            }
-        });
-        expandTimer.setInitialDelay(0);
-        expandTimer.start();
+        return panel;
     }
 
     /** 用户手动折叠扩展岛：播放期间折叠后本次会话不再自动弹出音乐岛，避免打扰 */
@@ -578,22 +625,22 @@ public class ExpandedIslandController {
             collapseAnimTimer.stop();
             collapseAnimTimer = null;
         }
-        Timer collapseTimer = collapseAnimTimer = new Timer(IslandUiStyle.EXPAND_ANIM_FRAME_MS, null);
-        final long animStart = System.currentTimeMillis();
+        Timer collapseTimer = collapseAnimTimer = new Timer(IslandUiStyle.expandAnimFrameMs(), null);
+        final long animStart = System.nanoTime();
         final int[] slideUpPhase = {0};
         final long[] slideUpPhaseStart = {animStart};
         final boolean[] windowHidden = {false};
         collapseTimer.addActionListener(e -> {
-            float elapsed = System.currentTimeMillis() - animStart;
-            float progress = Math.min(elapsed / IslandUiStyle.EXPAND_ANIM_DURATION_MS, 1.0f);
+            float elapsed = System.nanoTime() - animStart;
+            float progress = Math.min(elapsed / (IslandUiStyle.EXPAND_ANIM_DURATION_MS * 1_000_000f), 1.0f);
 
             boolean animationDone;
             if (slideUp) {
                 // 直接隐藏：先收缩成小球（保持中心点），再向上滑出屏幕顶部。
                 // 全程窗口可见，收缩与上滑过程清晰呈现（收尾时统一隐藏窗口）
-                long phaseElapsed = System.currentTimeMillis() - slideUpPhaseStart[0];
+                long phaseElapsed = System.nanoTime() - slideUpPhaseStart[0];
                 int phaseMs = slideUpPhase[0] == 0 ? IslandUiStyle.SLIDE_UP_SHRINK_MS : IslandUiStyle.SLIDE_UP_RISE_MS;
-                float phaseProgress = Math.min(phaseElapsed / (float) phaseMs, 1.0f);
+                float phaseProgress = Math.min(phaseElapsed / (phaseMs * 1_000_000f), 1.0f);
                 double pe = AnimationUtil.easeInOutQuad(phaseProgress);
                 int ball = AppConstants.BALL_SIZE;
                 int centerX = startLoc.x + startW / 2;
@@ -602,10 +649,16 @@ public class ExpandedIslandController {
                     // 阶段1：从两边向中间收缩成小球（保持中心点不变，全程可见）
                     int newW = (int) (startW - (startW - ball) * pe);
                     int newH = (int) (startH - (startH - ball) * pe);
-                    win.setBounds(centerX - newW / 2, centerY - newH / 2, newW, newH);
+                    int nx = centerX - newW / 2;
+                    int ny = centerY - newH / 2;
+                    // 整数截断下几何可能与当前一致：跳过冗余 setBounds
+                    Rectangle cur = win.getBounds();
+                    if (cur.x != nx || cur.y != ny || cur.width != newW || cur.height != newH) {
+                        win.setBounds(nx, ny, newW, newH);
+                    }
                     if (phaseProgress >= 1.0f) {
                         slideUpPhase[0] = 1;
-                        slideUpPhaseStart[0] = System.currentTimeMillis();
+                        slideUpPhaseStart[0] = System.nanoTime();
                     }
                     animationDone = false;
                 } else {
@@ -613,7 +666,9 @@ public class ExpandedIslandController {
                     int startY = centerY - ball / 2;
                     int targetY = screenBounds.y - ball;
                     int curY = (int) (startY + (targetY - startY) * pe);
-                    win.setLocation(centerX - ball / 2, curY);
+                    if (win.getY() != curY) {
+                        win.setLocation(centerX - ball / 2, curY);
+                    }
                     animationDone = phaseProgress >= 1.0f;
                 }
             } else {
@@ -625,7 +680,11 @@ public class ExpandedIslandController {
                 int curH = (int) (startH + (targetH - startH) * eased);
                 int curX = (int) (startLoc.x + (collapseTargetX - startLoc.x) * eased);
                 int curY = (int) (startLoc.y + (collapseTargetY - startLoc.y) * eased);
-                win.setBounds(curX, curY, curW, curH);
+                // 二次加速缓动起步段整数截断后常与当前几何一致：跳过冗余 setBounds
+                Rectangle cur = win.getBounds();
+                if (cur.x != curX || cur.y != curY || cur.width != curW || cur.height != curH) {
+                    win.setBounds(curX, curY, curW, curH);
+                }
                 animationDone = progress >= 1.0f;
             }
 
@@ -765,9 +824,9 @@ public class ExpandedIslandController {
         if (gestureSlideAnimTimer != null) gestureSlideAnimTimer.stop();
         final float from = gestureSlideProgress;
         final float to = target;
-        final long animStart = System.currentTimeMillis();
+        final long animStart = System.nanoTime();
         gestureSlideAnimTimer = new Timer(IslandUiStyle.SLIDE_ANIM_FRAME_MS, e -> {
-            float elapsed = (System.currentTimeMillis() - animStart) / (float) IslandUiStyle.SLIDE_ANIM_DURATION_MS;
+            float elapsed = (System.nanoTime() - animStart) / (IslandUiStyle.SLIDE_ANIM_DURATION_MS * 1_000_000f);
             float t = Math.min(elapsed, 1.0f);
             float eased = 1 - (1 - t) * (1 - t) * (1 - t) * (1 - t); // quartic ease-out
             gestureSlideProgress = from + (to - from) * eased;
@@ -908,14 +967,16 @@ public class ExpandedIslandController {
         if (weatherDetailAnimTimer != null) {
             weatherDetailAnimTimer.stop();
         }
-        final long animStart = System.currentTimeMillis();
-        Timer timer = weatherDetailAnimTimer = new Timer(IslandUiStyle.EXPAND_ANIM_FRAME_MS, null);
+        final long animStart = System.nanoTime();
+        Timer timer = weatherDetailAnimTimer = new Timer(IslandUiStyle.expandAnimFrameMs(), null);
         timer.addActionListener(e -> {
-            float progress = Math.min((System.currentTimeMillis() - animStart)
-                    / (float) IslandUiStyle.WEATHER_DETAIL_ANIM_MS, 1.0f);
+            float progress = Math.min((System.nanoTime() - animStart)
+                    / (IslandUiStyle.WEATHER_DETAIL_ANIM_MS * 1_000_000f), 1.0f);
             double eased = 1 - (1 - progress) * (1 - progress);
             int curH = (int) (fromH + (toH - fromH) * eased);
-            win.setBounds(winX, winY, winW, curH);
+            if (win.getHeight() != curH) {
+                win.setBounds(winX, winY, winW, curH);
+            }
             if (progress >= 1.0f) {
                 ((Timer) e.getSource()).stop();
                 weatherDetailAnimTimer = null;

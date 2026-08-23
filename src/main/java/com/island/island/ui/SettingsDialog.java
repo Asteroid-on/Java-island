@@ -2,6 +2,10 @@ package com.island.island.ui;
 
 import com.island.config.AppConfig;
 import com.island.config.AppConstants;
+import com.island.config.AppVersion;
+import com.island.update.UpdateChecker;
+import com.island.update.UpdateDownloader;
+import com.island.update.UpdateExtractor;
 import com.island.util.AppLogger;
 import com.island.util.WindowsStartupManager;
 import com.formdev.flatlaf.FlatLaf;
@@ -29,6 +33,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 设置对话框 ：卡片分区 + 深色主题。
@@ -70,6 +75,26 @@ public class SettingsDialog extends JDialog {
     private JTextArea logTextArea;
     private JLabel logFileInfoLabel;
 
+    // ── 更新页状态 ──
+    private JLabel updateStatusLabel;
+    private JTextArea updateNotesArea;
+    private JButton checkUpdateBtn;
+    private JButton downloadBtn;
+    private JButton cancelBtn;
+    private JButton openFolderBtn;
+    private JButton extractBtn;
+    private JProgressBar updateProgressBar;
+    private JLabel updateProgressLabel;
+    private JLabel updateSavePathLabel;
+    /** 最新版本信息（检查成功后填充）；下载/解压按钮依据它启用 */
+    private UpdateChecker.UpdateInfo latestUpdate;
+    /** 下载/解压已完成的 zip 文件 */
+    private File downloadedZip;
+    /** 取消标志：下载与解压共用，置 true 后后台线程尽快中断 */
+    private final AtomicBoolean cancelUpdate = new AtomicBoolean(false);
+    /** 当前后台下载/解压线程 */
+    private Thread updateWorker;
+
     private static class NavItem {
         final String label;
         NavItem(String label) { this.label = label; }
@@ -99,6 +124,7 @@ public class SettingsDialog extends JDialog {
 
         NavItem[] items = {
             new NavItem("常规"),
+            new NavItem("更新"),
             new NavItem("下载与缓存"),
             new NavItem("关于"),
             new NavItem("日志与错误报告"),
@@ -133,6 +159,7 @@ public class SettingsDialog extends JDialog {
         cardsPanel = new JPanel(cardLayout);
         cardsPanel.setBackground(C_BG);
         cardsPanel.add(scrollWrap(buildGeneralPanel()), "常规");
+        cardsPanel.add(scrollWrap(buildUpdatePanel()), "更新");
         cardsPanel.add(scrollWrap(buildCachePanel()), "下载与缓存");
         cardsPanel.add(scrollWrap(buildAboutPanel()), "关于");
         cardsPanel.add(scrollWrap(buildLogPanel()), "日志与错误报告");
@@ -158,13 +185,23 @@ public class SettingsDialog extends JDialog {
                 NavItem sel = navList.getSelectedValue();
                 if (sel != null) {
                     cardLayout.show(cardsPanel, sel.label);
-                    if (sel.label.contains("缓存")) refreshCachePanel();
+                    if (sel.label.contains("更新")) refreshUpdatePanel();
+                    else if (sel.label.contains("缓存")) refreshCachePanel();
                     else if (sel.label.contains("日志")) refreshLogPanel();
                 }
             }
         });
         addWindowListener(new WindowAdapter() {
-            @Override public void windowOpened(WindowEvent e) { refreshCachePanel(); }
+            @Override public void windowOpened(WindowEvent e) {
+                refreshCachePanel();
+                // 打开设置时后台预检查一次更新，用户切到“更新”页时结果通常已就绪
+                refreshUpdatePanel();
+            }
+
+            @Override public void windowClosed(WindowEvent e) {
+                // 关闭设置窗口时中断进行中的下载/解压，避免后台线程空转
+                cancelUpdate.set(true);
+            }
         });
     }
 
@@ -246,6 +283,337 @@ public class SettingsDialog extends JDialog {
     }
 
     // ═══════════════════════════════════════════
+    //  更新（GitHub Releases 检测与下载）
+    // ═══════════════════════════════════════════
+
+    private JPanel buildUpdatePanel() {
+        JPanel p = contentPanel("更新", "检测并从 GitHub Releases 下载新版本");
+
+        updateStatusLabel = new JLabel("尚未检查");
+        updateStatusLabel.setFont(F_BODY);
+        updateStatusLabel.setForeground(C_SUBTEXT);
+
+        JPanel latestRow = new JPanel(new BorderLayout(20, 0));
+        latestRow.setOpaque(false);
+        JLabel latestKey = new JLabel("最新版本");
+        latestKey.setFont(F_BODY);
+        latestKey.setForeground(C_MUTED);
+        latestRow.add(latestKey, BorderLayout.WEST);
+        latestRow.add(updateStatusLabel, BorderLayout.EAST);
+
+        checkUpdateBtn = sizedBtn("检查更新", 110, 30);
+        checkUpdateBtn.addActionListener(e -> refreshUpdatePanel());
+        JButton releasesBtn = sizedBtn("打开发布页", 120, 30);
+        releasesBtn.addActionListener(e -> openReleasesPage());
+
+        JPanel checkRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        checkRow.setOpaque(false);
+        checkRow.add(checkUpdateBtn);
+        checkRow.add(releasesBtn);
+
+        p.add(sectionCard("版本信息", new Component[]{
+                infoLine("当前版本", AppVersion.CURRENT),
+                Box.createVerticalStrut(6),
+                latestRow,
+                Box.createVerticalStrut(6),
+                checkRow
+        }));
+        p.add(Box.createVerticalStrut(12));
+
+        updateNotesArea = new JTextArea();
+        updateNotesArea.setEditable(false);
+        updateNotesArea.setLineWrap(true);
+        updateNotesArea.setWrapStyleWord(true);
+        updateNotesArea.setFont(F_BODY);
+        Color notesBg = DARK ? new Color(22, 22, 25) : new Color(250, 250, 252);
+        updateNotesArea.setBackground(notesBg);
+        updateNotesArea.setForeground(DARK ? new Color(205, 205, 210) : new Color(40, 40, 45));
+        updateNotesArea.setText("检查更新后在此显示发布说明。");
+
+        JScrollPane notesScroll = new JScrollPane(updateNotesArea);
+        notesScroll.setBorder(BorderFactory.createLineBorder(C_BORDER));
+        notesScroll.getViewport().setBackground(notesBg);
+        notesScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        notesScroll.setPreferredSize(new Dimension(10, 130));
+        notesScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 130));
+        notesScroll.getVerticalScrollBar().setUI(new ThinScrollBarUI());
+        notesScroll.getVerticalScrollBar().setPreferredSize(new Dimension(6, 0));
+        notesScroll.getVerticalScrollBar().setUnitIncrement(16);
+
+        p.add(sectionCard("发布说明", new Component[]{ notesScroll }));
+        p.add(Box.createVerticalStrut(12));
+
+        downloadBtn = sizedBtn("下载更新", 110, 30);
+        downloadBtn.setEnabled(false);
+        downloadBtn.addActionListener(e -> startDownload());
+        cancelBtn = sizedBtn("取消", 70, 30);
+        cancelBtn.setEnabled(false);
+        cancelBtn.addActionListener(e -> cancelUpdate.set(true));
+        openFolderBtn = sizedBtn("打开下载文件夹", 130, 30);
+        openFolderBtn.setEnabled(false);
+        openFolderBtn.addActionListener(e -> openDownloadFolder());
+        extractBtn = sizedBtn("解压并打开", 110, 30);
+        extractBtn.setEnabled(false);
+        extractBtn.addActionListener(e -> startExtract());
+
+        JPanel dlBtnRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        dlBtnRow.setOpaque(false);
+        dlBtnRow.add(downloadBtn);
+        dlBtnRow.add(openFolderBtn);
+        dlBtnRow.add(extractBtn);
+        dlBtnRow.add(cancelBtn);
+
+        updateProgressBar = new JProgressBar(0, 100);
+        updateProgressBar.setPreferredSize(new Dimension(10, 14));
+        updateProgressBar.setStringPainted(false);
+        updateProgressBar.setForeground(C_ACCENT2);
+        updateProgressBar.setBackground(C_GLASS);
+        updateProgressBar.setBorder(null);
+
+        updateProgressLabel = new JLabel(" ");
+        updateProgressLabel.setFont(F_SMALL);
+        updateProgressLabel.setForeground(C_SUBTEXT);
+
+        updateSavePathLabel = new JLabel();
+        updateSavePathLabel.setFont(F_SMALL);
+        updateSavePathLabel.setForeground(C_MUTED);
+
+        p.add(sectionCard("下载", new Component[]{
+                dlBtnRow,
+                Box.createVerticalStrut(6),
+                updateProgressBar,
+                Box.createVerticalStrut(2),
+                updateProgressLabel,
+                Box.createVerticalStrut(4),
+                updateSavePathLabel
+        }));
+        p.add(Box.createVerticalStrut(16));
+
+        JLabel tip = new JLabel("便携版为 zip 压缩包：下载后可解压并替换旧版本文件夹完成更新（解压在后台进行，请耐心等待）。");
+        tip.setFont(F_SMALL);
+        tip.setForeground(C_MUTED);
+        tip.setAlignmentX(Component.LEFT_ALIGNMENT);
+        p.add(tip);
+        return p;
+    }
+
+    /** 浏览器打开 Release 页面（API 检查失败时的手动兜底路径）。 */
+    private void openReleasesPage() {
+        try {
+            Desktop.getDesktop().browse(URI.create(UpdateChecker.releasesPageUrl()));
+        } catch (Exception ex) {
+            AppLogger.warn("Settings", "打开发布页失败", ex);
+            JOptionPane.showMessageDialog(this,
+                    "无法打开浏览器，请手动访问 " + UpdateChecker.releasesPageUrl(),
+                    "更新", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    /** 后台检查最新版本（不阻塞 EDT）；重复触发以最后一次结果为准。 */
+    private void refreshUpdatePanel() {
+        checkUpdateBtn.setEnabled(false);
+        updateStatusLabel.setText("正在检查...");
+        updateStatusLabel.setForeground(C_SUBTEXT);
+        new Thread(() -> {
+            try {
+                UpdateChecker.UpdateInfo info = UpdateChecker.checkLatest();
+                SwingUtilities.invokeLater(() -> {
+                    checkUpdateBtn.setEnabled(true);
+                    latestUpdate = info;
+                    boolean newer = info != null
+                            && AppVersion.isNewerThanCurrent(info.version());
+                    if (newer) {
+                        updateStatusLabel.setText("v" + info.version() + "（有新版本）");
+                        updateStatusLabel.setForeground(C_ACCENT2);
+                        downloadBtn.setEnabled(true);
+                    } else {
+                        updateStatusLabel.setText(info == null ? "仓库暂无 Release"
+                                : "v" + info.version() + "（已是最新）");
+                        updateStatusLabel.setForeground(C_SUBTEXT);
+                        downloadBtn.setEnabled(false);
+                    }
+                    updateNotesArea.setText((info != null && !info.body().isBlank())
+                            ? info.body() : "（该版本没有发布说明）");
+                    updateNotesArea.setCaretPosition(0);
+                });
+            } catch (Exception ex) {
+                AppLogger.warn("Settings", "检查更新失败", ex);
+                SwingUtilities.invokeLater(() -> {
+                    checkUpdateBtn.setEnabled(true);
+                    updateStatusLabel.setText("检查失败：" + ex.getMessage());
+                    updateStatusLabel.setForeground(C_MUTED);
+                });
+            }
+        }, "UpdateCheck").start();
+    }
+
+    /** 启动下载（后台线程 + 进度回调切回 EDT）。 */
+    private void startDownload() {
+        if (latestUpdate == null || latestUpdate.assetUrl().isBlank()) return;
+        cancelUpdate.set(false);
+        downloadBtn.setEnabled(false);
+        cancelBtn.setEnabled(true);
+        openFolderBtn.setEnabled(false);
+        extractBtn.setEnabled(false);
+        updateProgressBar.setValue(0);
+        updateProgressBar.setIndeterminate(false);
+        updateProgressLabel.setText("正在连接...");
+
+        Path saveDir = UpdateDownloader.downloadDir();
+        String fileName = !latestUpdate.assetName().isBlank()
+                ? latestUpdate.assetName()
+                : "Java-island-" + latestUpdate.version() + "-portable.zip";
+        updateSavePathLabel.setText("保存位置：" + saveDir.resolve(fileName));
+
+        updateWorker = new Thread(() -> {
+            try {
+                File saved = UpdateDownloader.download(latestUpdate.assetUrl(), fileName, saveDir,
+                        (done, total) -> SwingUtilities.invokeLater(() -> {
+                            if (total > 0) {
+                                updateProgressBar.setMaximum(100);
+                                updateProgressBar.setValue((int) (done * 100 / total));
+                            } else {
+                                updateProgressBar.setIndeterminate(true);
+                            }
+                            updateProgressLabel.setText(formatSize(done)
+                                    + (total > 0 ? " / " + formatSize(total) : ""));
+                        }), cancelUpdate);
+                SwingUtilities.invokeLater(() -> onDownloadComplete(saved));
+            } catch (Exception ex) {
+                SwingUtilities.invokeLater(() -> onDownloadError(ex));
+            }
+        }, "UpdateDownload");
+        updateWorker.setDaemon(true);
+        updateWorker.start();
+    }
+
+    private void onDownloadComplete(File saved) {
+        downloadedZip = saved;
+        updateProgressBar.setValue(100);
+        updateProgressBar.setIndeterminate(false);
+        updateProgressLabel.setText("下载完成：" + formatSize(saved.length()));
+        downloadBtn.setEnabled(true);
+        cancelBtn.setEnabled(false);
+        openFolderBtn.setEnabled(true);
+        extractBtn.setEnabled(true);
+        AppLogger.info("Settings", "新版本下载完成: " + saved.getAbsolutePath());
+    }
+
+    private void onDownloadError(Exception ex) {
+        boolean cancelled = cancelUpdate.get() && "下载已取消".equals(ex.getMessage());
+        updateProgressLabel.setText(cancelled ? "已取消" : "下载失败：" + ex.getMessage());
+        AppLogger.warn("Settings", "下载更新" + (cancelled ? "已取消" : "失败"), ex);
+        updateProgressBar.setIndeterminate(false);
+        downloadBtn.setEnabled(latestUpdate != null);
+        cancelBtn.setEnabled(false);
+        openFolderBtn.setEnabled(downloadedZip != null);
+        extractBtn.setEnabled(downloadedZip != null);
+    }
+
+    /** 打开下载所在文件夹（下载完成后优先打开保存目录）。 */
+    private void openDownloadFolder() {
+        try {
+            File folder = downloadedZip != null
+                    ? downloadedZip.getParentFile()
+                    : UpdateDownloader.downloadDir().toFile();
+            Desktop.getDesktop().open(folder);
+        } catch (Exception ex) {
+            AppLogger.warn("Settings", "打开下载文件夹失败", ex);
+            JOptionPane.showMessageDialog(this,
+                    "无法打开文件夹：" + ex.getMessage(),
+                    "更新", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    /** 启动解压（后台线程）：解压到 Downloads\Java-island-{版本} 目录并自动打开。 */
+    private void startExtract() {
+        if (downloadedZip == null) return;
+        Path dest = uniqueDir(UpdateDownloader.downloadDir(),
+                "Java-island-" + latestUpdate.version());
+        cancelUpdate.set(false);
+        downloadBtn.setEnabled(false);
+        cancelBtn.setEnabled(true);
+        openFolderBtn.setEnabled(false);
+        extractBtn.setEnabled(false);
+        updateProgressBar.setValue(0);
+        updateProgressBar.setIndeterminate(false);
+        updateProgressLabel.setText("正在解压...");
+        updateSavePathLabel.setText("解压到：" + dest);
+
+        updateWorker = new Thread(() -> {
+            try {
+                UpdateExtractor.extract(downloadedZip, dest,
+                        (done, total) -> SwingUtilities.invokeLater(() -> {
+                            if (total > 0) {
+                                updateProgressBar.setMaximum(100);
+                                updateProgressBar.setValue((int) (done * 100 / total));
+                            } else {
+                                updateProgressBar.setIndeterminate(true);
+                            }
+                            updateProgressLabel.setText("解压 " + formatSize(done)
+                                    + (total > 0 ? " / " + formatSize(total) : ""));
+                        }), cancelUpdate);
+                SwingUtilities.invokeLater(() -> onExtractComplete(dest));
+            } catch (Exception ex) {
+                SwingUtilities.invokeLater(() -> onExtractError(ex));
+            }
+        }, "UpdateExtract");
+        updateWorker.setDaemon(true);
+        updateWorker.start();
+    }
+
+    private void onExtractComplete(Path dest) {
+        updateProgressBar.setValue(100);
+        updateProgressBar.setIndeterminate(false);
+        updateProgressLabel.setText("解压完成");
+        downloadBtn.setEnabled(true);
+        cancelBtn.setEnabled(false);
+        openFolderBtn.setEnabled(true);
+        extractBtn.setEnabled(false);
+        // 打开解压结果：若恰好只有一个顶层目录则直接进入（便携包内为 Java-island 文件夹）
+        try {
+            Path openTarget = dest;
+            File[] children = dest.toFile().listFiles();
+            if (children != null && children.length == 1 && children[0].isDirectory()) {
+                openTarget = children[0].toPath();
+            }
+            Desktop.getDesktop().open(openTarget.toFile());
+        } catch (Exception ex) {
+            AppLogger.warn("Settings", "打开解压目录失败", ex);
+        }
+        AppLogger.info("Settings", "新版本解压完成: " + dest);
+    }
+
+    private void onExtractError(Exception ex) {
+        boolean cancelled = cancelUpdate.get() && "解压已取消".equals(ex.getMessage());
+        updateProgressLabel.setText(cancelled ? "已取消" : "解压失败：" + ex.getMessage());
+        AppLogger.warn("Settings", "解压更新" + (cancelled ? "已取消" : "失败"), ex);
+        updateProgressBar.setIndeterminate(false);
+        downloadBtn.setEnabled(latestUpdate != null);
+        cancelBtn.setEnabled(false);
+        openFolderBtn.setEnabled(downloadedZip != null);
+        extractBtn.setEnabled(downloadedZip != null);
+    }
+
+    /** 生成不冲突的目标目录：已存在时追加 " (2)"、" (3)" 序号。 */
+    private static Path uniqueDir(Path base, String name) {
+        Path p = base.resolve(name);
+        int i = 2;
+        while (Files.exists(p)) {
+            p = base.resolve(name + " (" + i + ")");
+            i++;
+        }
+        return p;
+    }
+
+    /** 字节数格式化（B/KB/MB）。 */
+    private static String formatSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
+    }
+
+    // ═══════════════════════════════════════════
     //  下载与缓存
     // ═══════════════════════════════════════════
 
@@ -296,7 +664,7 @@ public class SettingsDialog extends JDialog {
         p.add(sectionCard("应用信息", new Component[]{
             infoLine("应用名称", "云隙泡（Java-Island）"),
             Box.createVerticalStrut(6),
-            infoLine("版本", "1.1"),
+            infoLine("版本", AppVersion.CURRENT),
             Box.createVerticalStrut(6),
             infoLine("Java", System.getProperty("java.version")),
         }));
@@ -871,7 +1239,7 @@ public class SettingsDialog extends JDialog {
         body.append(System.lineSeparator())
                 .append("日志目录：").append(Path.of(AppConstants.getLogDir()).toAbsolutePath())
                 .append(System.lineSeparator())
-                .append("应用版本：1.0")
+                .append("应用版本：").append(AppVersion.CURRENT)
                 .append(System.lineSeparator())
                 .append("Java：").append(System.getProperty("java.version"));
         String text = body.toString();
@@ -902,7 +1270,7 @@ public class SettingsDialog extends JDialog {
         body.append(System.lineSeparator()).append(System.lineSeparator())
                 .append("### 环境信息").append(System.lineSeparator())
                 .append(System.lineSeparator())
-                .append("- 应用版本：1.0").append(System.lineSeparator())
+                .append("- 应用版本：").append(AppVersion.CURRENT).append(System.lineSeparator())
                 .append("- Java：").append(System.getProperty("java.version"))
                 .append(System.lineSeparator())
                 .append("- 日志目录：").append(Path.of(AppConstants.getLogDir()).toAbsolutePath());

@@ -3,9 +3,11 @@ package com.island;
 import com.island.battery.BatteryMonitor;
 import com.island.privacy.PrivacyMonitor;
 import com.island.config.AppConstants;
+import com.island.config.AppVersion;
 import com.island.island.ui.IslandWindow;
 import com.island.music.MusicMonitor;
 import com.island.tray.SystemTrayManager;
+import com.island.update.UpdateChecker;
 import com.island.util.AppLogger;
 import com.island.util.DpiUtil;
 import com.island.util.ScreenUtil;
@@ -118,6 +120,9 @@ public class IslandApplication {
             SystemTrayManager trayManager = new SystemTrayManager(island);
             island.setTrayManager(trayManager);
 
+            // 自动更新检测：后台延迟执行，发现新版本时托盘气泡提示（入口在 设置 → 更新）
+            scheduleUpdateCheck(trayManager);
+
             // 初始化音乐监控（依赖 .NET 8 MediaInfoDaemon 后台运行）
             MusicMonitor musicMonitor = new MusicMonitor();
             island.setMusicMonitor(musicMonitor);
@@ -162,6 +167,39 @@ public class IslandApplication {
             disableHighResolutionTimer();
             AppLogger.info("IslandApplication", "应用已退出。");
         }));
+    }
+
+    // ═══════════════════════════════════════════
+    //  自动更新检测
+    // ═══════════════════════════════════════════
+
+    /**
+     * 后台检查 GitHub Releases 最新版本：延迟 30s 执行，避开冷启动高峰与
+     * 天气/守护进程的首次网络请求；同一版本仅提示一次（记录于 Preferences）。
+     */
+
+    private static void scheduleUpdateCheck(SystemTrayManager trayManager) {
+        Thread checker = new Thread(() -> {
+            try {
+                Thread.sleep(30_000);
+                UpdateChecker.UpdateInfo info = UpdateChecker.checkLatest();
+                if (info == null || !AppVersion.isNewerThanCurrent(info.version())) {
+                    return;
+                }
+                if (info.version().equals(AppConstants.getUpdateNotifiedVersion())) {
+                    return;
+                }
+                AppConstants.setUpdateNotifiedVersion(info.version());
+                AppLogger.info("IslandApplication", "发现新版本 v" + info.version() + "，已发送托盘通知");
+                trayManager.notifyUpdateAvailable(info.version());
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                AppLogger.warn("IslandApplication", "更新检测失败", e);
+            }
+        }, "UpdateCheck");
+        checker.setDaemon(true);
+        checker.start();
     }
 
     // ═══════════════════════════════════════════

@@ -10,6 +10,7 @@ import com.island.util.AnimationUtil;
 import com.island.util.AppLogger;
 import com.island.util.ScreenUtil;
 import com.island.util.SvgIcon;
+import com.island.util.Win32WindowUtil;
 
 import java.awt.*;
 import java.awt.event.*;
@@ -457,14 +458,29 @@ public class SystemTrayManager {
     }
 
     /**
-     * 鼠标信息监听器 - 检测鼠标位置，控制岛的显示和隐藏
+     * 鼠标信息监听器 - 检测鼠标位置，控制岛的显示和隐藏。
+     * 高优先级线程 + 自适应轮询：远离触发区 100ms 慢轮询，
+     * 近触发区/岛可见/动画进行中切 16ms 快轮询，游戏等高负载场景下保持响应。
      */
     private class MouseInfoMonitor extends Thread {
         private volatile boolean running = true;
+        /** 前台无边框全屏窗口状态（日志去重用，避免重复刷屏） */
+        private boolean lastFullscreenFg = false;
+
+        MouseInfoMonitor() {
+            // 游戏抢占 CPU 时默认优先级会导致轮询线程调度延迟增大（岛响应变慢），提高优先级
+            setName("MouseInfoMonitor");
+            setPriority(Thread.MAX_PRIORITY);
+            setDaemon(true);
+        }
 
         public void run() {
+            long lastFullscreenCheck = 0;
             while (running) {
                 try {
+                    // 近触发区/鼠标在岛上标记：块外声明，供自适应轮询间隔使用
+                    boolean isNearTopEdge = false;
+                    boolean isMouseOverIsland = false;
                     PointerInfo pointerInfo = MouseInfo.getPointerInfo();
                     if (pointerInfo != null) {
                         Point mouseLocation = pointerInfo.getLocation();
@@ -475,7 +491,7 @@ public class SystemTrayManager {
                         int islandHeight = islandWindow.getHeight();
 
                         // 检测鼠标是否在云隙泡区域内
-                        boolean isMouseOverIsland = (
+                        isMouseOverIsland = (
                             mouseLocation.x >= islandLocation.x &&
                             mouseLocation.x <= islandLocation.x + islandWidth &&
                             mouseLocation.y >= islandLocation.y &&
@@ -486,20 +502,31 @@ public class SystemTrayManager {
                         // 水平范围取该屏内岛的居中位置附近，不依赖岛当前残留位置）
                         Rectangle triggerScreen = ScreenUtil.getScreenBoundsAt(mouseLocation);
                         int islandCenterX = triggerScreen.x + triggerScreen.width / 2;
-                        boolean isNearTopEdge = (
+                        isNearTopEdge = (
                             mouseLocation.y <= triggerScreen.y + AppConstants.TRIGGER_DISTANCE &&
                             Math.abs(mouseLocation.x - islandCenterX) <= islandWidth / 2 + 10
                         );
 
-                        // 扩展岛显示时，主岛不再响应鼠标触发
+                        // 扩展岛显示时，主岛不再响应鼠标触发；
+                        // 但扩展岛仍需反复重申不抢焦点置顶（游戏全屏场景防被盖住）
                         if (islandWindow.isExpandedIslandVisible()) {
-                            Thread.sleep(AppConstants.HIDE_CHECK_INTERVAL);
+                            JWindow expanded = islandWindow.getExpandedWindow();
+                            if (expanded != null) {
+                                Win32WindowUtil.topmostNoActivate(expanded);
+                            }
+                            Thread.sleep(AppConstants.FAST_POLL_INTERVAL);
                             continue;
                         }
 
                         // 逻辑：鼠标靠近上边框或在岛上时显示，否则隐藏
                         if ((isNearTopEdge || isMouseOverIsland) &&
                             service.getState() == IslandState.HIDDEN) {
+                            // 前台无边框全屏窗口（游戏全屏）场景：不弹出岛，避免与游戏抢 Z 序/焦点；
+                            // 实时检测保证进入全屏后立即生效（不等周期检测）
+                            if (Win32WindowUtil.isForegroundFullscreenWindow()) {
+                                Thread.sleep(AppConstants.FAST_POLL_INTERVAL);
+                                continue;
+                            }
                             if (AppConstants.DEBUG_CONSOLE) {
                                 System.out.println("鼠标靠近上边框或在岛上，显示云隙泡");
                             }
@@ -525,9 +552,43 @@ public class SystemTrayManager {
                             service.hide();
                             animateHide();
                         }
+
+                        // 岛可见期间反复重申不抢焦点置顶：全屏/无边框游戏窗口处于激活态时
+                        // Windows 会把激活的 TOPMOST 窗口排到最前，不重申会被游戏盖住
+                        if (service.getState() == IslandState.VISIBLE) {
+                            Win32WindowUtil.topmostNoActivate(islandWindow);
+                        }
                     }
 
-                    Thread.sleep(AppConstants.HIDE_CHECK_INTERVAL);
+                    // 自适应轮询间隔：近触发区/岛可见/动画中快轮询，远离慢轮询
+                    boolean fastPoll = isNearTopEdge || isMouseOverIsland
+                            || (service.getState() != IslandState.HIDDEN)
+                            || showHideAnimRunning || islandWindow.isVisible();
+                    Thread.sleep(fastPoll
+                            ? AppConstants.FAST_POLL_INTERVAL
+                            : AppConstants.HIDE_CHECK_INTERVAL);
+
+                    // 前台无边框全屏窗口检测（5s 一次，状态变化才记日志）：
+                    // 全屏期间岛不显示；已显示的岛在进入全屏后自动收起；
+                    // 独占全屏游戏接管显示输出时任何窗口都无法覆盖
+                    long now = System.currentTimeMillis();
+                    if (now - lastFullscreenCheck >= 5000) {
+                        lastFullscreenCheck = now;
+                        boolean fgFullscreen = Win32WindowUtil.isForegroundFullscreenWindow();
+                        if (fgFullscreen != lastFullscreenFg) {
+                            lastFullscreenFg = fgFullscreen;
+                            if (fgFullscreen) {
+                                AppLogger.info("SystemTray", "检测到前台无边框全屏窗口：暂停鼠标触发显示岛；"
+                                        + "若为独占全屏游戏，Windows 会接管显示输出导致岛无法覆盖");
+                            }
+                        }
+                        // 进入全屏时自动收起已显示的岛（通知展示中不打断）
+                        if (fgFullscreen && service.getState() == IslandState.VISIBLE
+                                && !islandWindow.isShowingNotification()) {
+                            service.hide();
+                            animateHide();
+                        }
+                    }
                 } catch (InterruptedException e) {
                     break;
                 }
@@ -608,7 +669,9 @@ public class SystemTrayManager {
                 location.y - ballSize, ballSize, ballSize);
         islandWindow.setVisible(true);
         islandWindow.setHiding(false);
-        islandWindow.toFront();
+        // 不抢焦点置顶（替代 toFront）：游戏全屏/无边框窗口场景下岛能盖在游戏之上
+        // 且不激活窗口，避免焦点大战导致游戏失焦/暂停与动画卡顿
+        Win32WindowUtil.topmostNoActivate(islandWindow);
 
         javax.swing.Timer timer = new javax.swing.Timer(AppConstants.ANIMATION_FRAME_INTERVAL, null);
         final int[] phase = {0}; // 0=向下移动, 1=展开
@@ -617,6 +680,9 @@ public class SystemTrayManager {
         final double durationPhase2 = AppConstants.ANIMATION_DURATION_PHASE2;
 
         timer.addActionListener(e -> {
+            // 每帧重申不抢焦点置顶：动画期间游戏激活会把 TOPMOST 窗口重排到自己之上，
+            // 不重申岛会在动画中被盖住
+            Win32WindowUtil.topmostNoActivate(islandWindow);
             if (phase[0] == 0) {
                 // 阶段1：小球向下移动到目标位置
                 progress[0] += 1.0 / durationPhase1;
@@ -763,6 +829,18 @@ public class SystemTrayManager {
         showHideAnimTimer = timer;
         timer.setInitialDelay(0);
         timer.start();
+    }
+
+    /**
+     * 托盘气泡提示新版本可用（自动更新检测线程在 EDT 外调用，本方法内部切回 EDT）。
+     * 气泡点击会触发托盘默认动作（切换主岛显示），下载入口在 设置 → 更新。
+     */
+    public void notifyUpdateAvailable(String version) {
+        if (trayIcon == null) return;
+        SwingUtilities.invokeLater(() -> trayIcon.displayMessage(
+                "发现新版本",
+                "云隙泡 v" + version + " 已发布，可在 设置 → 更新 中下载。",
+                TrayIcon.MessageType.INFO));
     }
 
     public void dispose() {

@@ -2,6 +2,7 @@ package com.island.island.ui;
 
 import java.awt.Color;
 import java.awt.Font;
+import java.awt.GraphicsEnvironment;
 
 /**
  * 动态岛 UI 共享样式常量：颜色、字体、动画时长与布局尺寸。
@@ -42,6 +43,8 @@ public final class IslandUiStyle {
     public static final int EXPANDED_HEIGHT = 54;
     public static final int EXPAND_ANIM_DURATION_MS = 280;
     public static final int EXPAND_ANIM_FRAME_MS = 10;
+    /** 高 DPI（缩放 > 100%）下展开/收起动画帧间隔：约 60 FPS 对齐显示器刷新率，给 EDT 留足每帧绘制预算 */
+    public static final int EXPAND_ANIM_FRAME_MS_HIDPI = 16;
     public static final int SLIDE_ANIM_DURATION_MS = 400;
     public static final int SLIDE_ANIM_FRAME_MS = 11; // 约 90 FPS（1000/11 ≈ 90.9）
     /** 直接隐藏阶段1（两边向中间收缩成小球）时长 */
@@ -102,4 +105,43 @@ public final class IslandUiStyle {
     public static final int IDLE_AUTO_COLLAPSE_MS = 10 * 60 * 1000;
     /** 空闲自动收起巡检间隔 */
     public static final int IDLE_AUTO_COLLAPSE_CHECK_MS = 5000;
+
+    // ── DPI 自适应动画帧策略 ──
+
+    /** 默认屏 DPI 缩放缓存（设备像素/逻辑像素；Per-Monitor V2 下窗口跨屏时以所在屏为准，这里取默认屏近似） */
+    private static volatile Double cachedUiScale;
+
+    /** 当前 UI 缩放比例（默认屏设备像素/逻辑像素，100% = 1.0） */
+    public static double currentUiScale() {
+        Double scale = cachedUiScale;
+        if (scale == null) {
+            try {
+                scale = GraphicsEnvironment.getLocalGraphicsEnvironment()
+                        .getDefaultScreenDevice().getDefaultConfiguration()
+                        .getDefaultTransform().getScaleX();
+            } catch (Throwable t) {
+                scale = 1.0;
+            }
+            cachedUiScale = scale;
+        }
+        return scale;
+    }
+
+    /**
+     * 展开/收起动画帧间隔（DPI 自适应）：100% 缩放 10ms（100 FPS）。
+     * 高 DPI 下每帧绘制成本随缩放平方增长，10ms 预算无法兑现导致 Timer 事件合并掉帧；
+     * 降为 16ms（约 60 FPS）后每帧预算增大、帧间隔均匀，动画时长与缓动曲线不变。
+     * 性能对比测试可用 -Disland.expandAnimFrameMs=N 临时覆盖（生产不设置该属性）。
+     */
+    public static int expandAnimFrameMs() {
+        String override = System.getProperty("island.expandAnimFrameMs");
+        if (override != null) {
+            try {
+                return Integer.parseInt(override.trim());
+            } catch (NumberFormatException ignored) {
+                // 覆盖值非法时回退到自适应策略
+            }
+        }
+        return currentUiScale() > 1.0 ? EXPAND_ANIM_FRAME_MS_HIDPI : EXPAND_ANIM_FRAME_MS;
+    }
 }

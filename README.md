@@ -12,6 +12,7 @@
 - 🔒 **单实例保护**: 端口 9127 单实例锁，重复启动自动退出
 - 🔧 **守护进程**: MediaInfoDaemon / ncm-server / qqmusic-api 自动拉起与回收
 - 🌓 **系统托盘**: 后台运行，托盘菜单控制（设置/退出）
+- 🔄 **自动更新**: 后台检测 GitHub Releases 新版本并托盘提醒，设置内一键检查/下载/解压更新
 
 ## 🚀 快速开始
 
@@ -28,7 +29,7 @@
 mvn clean package
 ```
 
-编译成功后，会在 `target` 目录下生成 `Java-island-1.1.jar` 文件。
+编译成功后，会在 `target` 目录下生成 `Java-island-1.1.1.jar` 文件。
 
 ### 第二步：启动云隙泡
 
@@ -59,6 +60,7 @@ Java-island/
 │   ├── battery/ bluetooth/     # 电池/蓝牙监控（JNA）
 │   ├── wifi/ privacy/ weather/ # WiFi/隐私/天气监控
 │   ├── tray/ monitor/ config/  # 托盘/监控调度/配置
+│   ├── update/                 # 自动更新（GitHub Releases 检测/下载/解压）
 │   └── util/                   # 日志、窗口管理等工具
 ├── src/main/resources/         # 字体/图标/native(MediaInfoDaemon 源码)/config.properties
 ├── QQMusicapi/                 # QQ音乐 API 子项目（Node.js + Koa，端口 3300）
@@ -133,6 +135,8 @@ public static final int MUSIC_STOP_AUTO_HIDE_MS = 2 * 60 * 1000; // 音乐停止
 - **MediaInfoDaemon** - C#（.NET 8）SMTC 媒体信息守护进程
 - **QQMusicapi** - Node.js ≥18（Koa）QQ音乐 API 子项目，源自 [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) 的 JavaScript 移植
 - **ncm-server** - 网易云 API 代理，源自 [Binaryify/NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi) 打包
+- **天气数据源** - 聚合数据（Juhe）+ 彩云天气（CaiYun）双源并行合并，高德地图 Web 服务逆地理编码（区级地名）
+- **自动更新** - `java.net.http` HttpClient + GitHub Releases API（检测最新版本/下载/解压便携包，可配置 `update.repo`）
 - **Maven** - 构建工具
 
 > 音乐歌词的完整调度链路（ncm-server / QQMusicapi / LRCLIB）见 [使用说明.md](./使用说明.md)「音乐功能与歌词来源」章节。
@@ -168,6 +172,16 @@ A:
 3. 调整动画帧率（修改Timer间隔）
 
 ## 📝 更新日志
+
+### v1.1.1
+- ✅ 自动更新：启动后台检测 GitHub Releases 最新版本（延迟 30s，不阻塞启动），发现新版本托盘气泡提醒（同版本仅提醒一次）
+- ✅ 设置新增「更新」页签：当前/最新版本与发布说明展示、手动检查更新、浏览器打开发布页兜底
+- ✅ 便携包下载：进度条实时显示 + 中途取消（.part 临时文件自动清理）、下载完成一键打开所在文件夹
+- ✅ 解压并打开：后台解压到 Downloads（字节级进度、路径穿越防护、失败/取消自动清理半成品目录）
+- ✅ 版本号统一收敛至 `AppVersion.CURRENT`，仓库可配置（`update.repo`，默认 Asteroid-on/Java-island）
+- ✅ 游戏全屏适配：检测前台无边框全屏窗口（游戏），全屏期间岛不弹出，已显示的岛自动收起（触发前实时检测）
+- ✅ 岛显示不抢焦点：SetWindowPos 不激活置顶替代 toFront，游戏不失焦/不暂停，消除焦点大战导致的动画卡顿；岛可见与动画期间每帧重申置顶防止被游戏盖住
+- ✅ 鼠标轮询优化：高优先级线程 + 自适应轮询（近触发区/岛可见/动画中 16ms 快轮询，远离 100ms 慢轮询），游戏等高负载场景下保持响应
 
 ### v1.1
 - ✅ 天气详情面板：24 小时逐时预报时间轴（滚轮横向滚动），未来 48 小时日出/日落以彩色细线标注，时间轴下方日出日落信息行

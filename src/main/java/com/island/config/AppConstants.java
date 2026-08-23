@@ -36,6 +36,13 @@ public final class AppConstants {
     /** 隐藏检测间隔：100ms */
     public static final int HIDE_CHECK_INTERVAL = 100;
 
+    /**
+     * 近区快速轮询间隔：16ms。
+     * 鼠标接近顶部触发区、岛可见或动画进行中时启用，
+     * 游戏等高负载场景下也能保证岛显示响应与动画节奏。
+     */
+    public static final int FAST_POLL_INTERVAL = 16;
+
     /** 动画帧间隔：8ms（约120fps） */
     public static final int ANIMATION_FRAME_INTERVAL = 8;
 
@@ -202,6 +209,28 @@ public final class AppConstants {
         try {
             Preferences.userNodeForPackage(AppConstants.class)
                     .putBoolean(PREF_KEY_MINIMIZE_TO_TRAY, enabled);
+        } catch (Exception ignored) { }
+    }
+
+    // ── 更新通知版本记录 ──
+
+    private static final String PREF_KEY_UPDATE_NOTIFIED_VERSION = "update.notifiedVersion";
+
+    /** 获取上次已弹托盘通知的版本号（空字符串表示从未通知），用于避免同一版本重复提醒。 */
+    public static String getUpdateNotifiedVersion() {
+        try {
+            return Preferences.userNodeForPackage(AppConstants.class)
+                    .get(PREF_KEY_UPDATE_NOTIFIED_VERSION, "");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** 记录上次已弹托盘通知的版本号。 */
+    public static void setUpdateNotifiedVersion(String version) {
+        try {
+            Preferences.userNodeForPackage(AppConstants.class)
+                    .put(PREF_KEY_UPDATE_NOTIFIED_VERSION, version == null ? "" : version);
         } catch (Exception ignored) { }
     }
 

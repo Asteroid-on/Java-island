@@ -184,6 +184,11 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
         return expandedController.isVisible();
     }
 
+    /** 扩展岛窗口（供 SystemTrayManager 在可见期间重申不抢焦点置顶；未创建时为 null） */
+    public JWindow getExpandedWindow() {
+        return expandedController.getExpandedWindow();
+    }
+
     public void restoreTimeDisplay() {
         isHiding = false;
         isFinishingNotification = false;
