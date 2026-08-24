@@ -62,10 +62,13 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
 
     private static final long serialVersionUID = 1L;
 
+    // 时间/日期格式固定为简体中文，与 JVM 默认 Locale 脱钩：
+    // 静态字段在类加载时一次性初始化，若此时 Locale.getDefault() 尚未被设置为中文
+    // （如类加载时机早于 Locale.setDefault），日期会显示为英文 "Aug 25, 2026"
     private static final DateTimeFormatter TIME_FORMATTER =
-            DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(Locale.getDefault());
+            DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(Locale.SIMPLIFIED_CHINESE);
     private static final DateTimeFormatter DATE_FORMATTER =
-            DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(Locale.getDefault());
+            DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(Locale.SIMPLIFIED_CHINESE);
 
     private final transient DynamicIslandService service;
     private final transient ExpandedIslandController expandedController;

@@ -67,7 +67,12 @@ public class IslandApplication {
     }
 
     public static void main(String[] args) {
-        // ── 0. 启用 Per-Monitor V2 DPI 感知（必须在创建任何窗口之前调用，否则失效）──
+        // ── 0. 锁定默认区域为简体中文（必须先于任何类加载：IslandWindow 的静态
+        //        时间/日期 formatter 在类初始化时捕获 Locale.getDefault()，
+        //        类加载晚于本行才会使用中文格式，否则日期会显示为英文）──
+        Locale.setDefault(Locale.SIMPLIFIED_CHINESE);
+
+        // ── 0.1 启用 Per-Monitor V2 DPI 感知（必须在创建任何窗口之前调用，否则失效）──
         DpiUtil.enablePerMonitorDpi();
 
         // ── 0.5 启用 1ms 系统定时器粒度（动画帧率优化；退出时由关闭钩子恢复）──
@@ -112,7 +117,6 @@ public class IslandApplication {
             } catch (Exception e) {
                 AppLogger.warn("IslandApplication", "设置 FlatLaf 主题失败", e);
             }
-            Locale.setDefault(Locale.SIMPLIFIED_CHINESE);
 
             IslandWindow island = new IslandWindow();
 
