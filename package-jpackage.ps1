@@ -168,8 +168,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "jpackage failed, exit $LASTEXITCODE" }
 
     # ── 4. copy daemons next to exe ──
-    Write-Host '[4/6] copying daemons (MediaInfoDaemon / WechatNotifyDaemon / ncm-server / QQMusicapi / qishui-api) ...'
-    foreach ($f in @('MediaInfoDaemon.exe', 'MediaInfoDaemon.pdb', 'WechatNotifyDaemon.exe', 'ncm-server.exe')) {
+    Write-Host '[4/6] copying daemons (MediaInfoDaemon / WechatNotifyDaemon / QqNotifyDaemon / ncm-server / QQMusicapi / qishui-api) ...'
+    foreach ($f in @('MediaInfoDaemon.exe', 'MediaInfoDaemon.pdb', 'WechatNotifyDaemon.exe', 'QqNotifyDaemon.exe', 'ncm-server.exe')) {
         $src = Join-Path $Root $f
         if (Test-Path $src) {
             Copy-Item $src $ImageRoot -Force
@@ -188,7 +188,12 @@ try {
     $qsDir = Join-Path $Root 'qishui-api'
     if (Test-Path $qsDir) {
         Copy-Item $qsDir (Join-Path $ImageRoot 'qishui-api') -Recurse -Force
-        Write-Host '  + qishui-api\'
+        # 不随包分发本地登录态/运行时文件：清理 .env 与临时文件，写入无凭据的最小配置（默认端口即 3300）
+        $qsImage = Join-Path $ImageRoot 'qishui-api'
+        Remove-Item (Join-Path $qsImage '.env') -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $qsImage '.session.tmp') -Force -ErrorAction SilentlyContinue
+        Set-Content -Path (Join-Path $qsImage '.env') -Value "# qishui-api default config (bundled)`nPORT=3300`nHOST=127.0.0.1" -Encoding ASCII
+        Write-Host '  + qishui-api\ (local .env replaced with credential-free defaults)'
     } else {
         Write-Warning 'skip qishui-api (not found, 汽水音乐歌词/封面不可用)'
     }
