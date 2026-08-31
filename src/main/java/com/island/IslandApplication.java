@@ -12,6 +12,8 @@ import com.island.util.AppLogger;
 import com.island.util.DpiUtil;
 import com.island.util.ScreenUtil;
 import com.island.util.WindowsTheme;
+import com.island.qq.QqNotificationMonitor;
+import com.island.wechat.WechatNotificationMonitor;
 import com.formdev.flatlaf.FlatDarkLaf;
 import com.formdev.flatlaf.FlatLightLaf;
 import com.sun.jna.Library;
@@ -48,7 +50,7 @@ import java.util.concurrent.TimeUnit;
  * <h3>启动流程</h3>
  * <ol>
  *   <li>单实例锁（端口 {@value AppConstants#SINGLE_INSTANCE_PORT}）</li>
- *   <li>启动依赖守护进程（MediaInfoDaemon、ncm-server、qqmusic-api）</li>
+ *   <li>启动依赖守护进程（MediaInfoDaemon、ncm-server、qqmusic-api、qishui-api）</li>
  *   <li>初始化 UI 与各监控模块</li>
  * </ol>
  */
@@ -71,6 +73,18 @@ public class IslandApplication {
         //        时间/日期 formatter 在类初始化时捕获 Locale.getDefault()，
         //        类加载晚于本行才会使用中文格式，否则日期会显示为英文）──
         Locale.setDefault(Locale.SIMPLIFIED_CHINESE);
+
+        // ── 0.05 HTTPS 信任链改用 Windows 根证书库（必须先于任何网络请求）──
+        // 部分机器装有 HTTPS 加速/代理工具（如 SteamTools）对 GitHub 等域名做证书 MITM，
+        // 其根证书已入 Windows 证书库（浏览器/PowerShell 访问正常）但不在 JVM 内置
+        // cacerts 中，导致更新检测报 PKIX path building failed；Windows-ROOT 让 JVM 跟随
+        // 系统信任链，一并解决。SunMSCAPI 提供者缺失等异常时保持默认信任库不影响启动。
+        try {
+            if (System.getProperty("javax.net.ssl.trustStoreType") == null) {
+                System.setProperty("javax.net.ssl.trustStoreType", "Windows-ROOT");
+            }
+        } catch (Exception ignored) {
+        }
 
         // ── 0.1 启用 Per-Monitor V2 DPI 感知（必须在创建任何窗口之前调用，否则失效）──
         DpiUtil.enablePerMonitorDpi();
@@ -138,6 +152,14 @@ public class IslandApplication {
             // 初始化摄像头/麦克风使用状态监控
             PrivacyMonitor privacyMonitor = new PrivacyMonitor();
             island.setPrivacyMonitor(privacyMonitor);
+
+            // 初始化微信消息通知监控（依赖 WechatNotifyDaemon 后台运行）
+            WechatNotificationMonitor wechatMonitor = new WechatNotificationMonitor();
+            island.setWechatMonitor(wechatMonitor);
+
+            // 初始化 QQ 消息通知监控（依赖 QqNotifyDaemon 后台运行，状态文件推送）
+            QqNotificationMonitor qqMonitor = new QqNotificationMonitor();
+            island.setQqMonitor(qqMonitor);
 
             // 初始定位按鼠标所在显示器居中（窗口初始隐藏，随首次触发重新定位）
             Rectangle screenBounds = ScreenUtil.getScreenBoundsAtMouse();
@@ -214,23 +236,32 @@ public class IslandApplication {
     private static ScheduledExecutorService hiResTimerKeeper;
 
     private static void enableHighResolutionTimer() {
-        try {
-            Winmm.INSTANCE.timeBeginPeriod(1);
-        } catch (Throwable t) {
-            AppLogger.warn("IslandApplication", "启用高精度定时器失败: " + t.getMessage());
-        }
-        // 周期重申：timeBeginPeriod 幂等且开销极小，覆盖"系统待机恢复后定时器粒度回退"场景
+        affirmHighResolutionTimer();
+        // 周期重申：timeBeginPeriod 幂等且开销极小（单次 native 调用微秒级），
+        // 覆盖"系统待机恢复后定时器粒度回退"场景；间隔取 5 秒，
+        // 把恢复后到首次重申的盲区窗口压到最短（配合交互侧的即时重申双重保险）。
         hiResTimerKeeper = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "HiResTimerKeeper");
             t.setDaemon(true);
             return t;
         });
-        hiResTimerKeeper.scheduleWithFixedDelay(() -> {
-            try {
-                Winmm.INSTANCE.timeBeginPeriod(1);
-            } catch (Throwable ignored) {
-            }
-        }, 30, 30, TimeUnit.SECONDS);
+        hiResTimerKeeper.scheduleWithFixedDelay(
+                IslandApplication::affirmHighResolutionTimer, 5, 5, TimeUnit.SECONDS);
+    }
+
+    /**
+     * 立即重申 1ms 系统定时器粒度（幂等，微秒级开销，任意线程可调用）。
+     *
+     * <p>粒度失效期间 {@code Thread.sleep(16)} 实际睡 ~31ms、{@code javax.swing.Timer}
+     * 被钳到 15.6ms，动画与鼠标轮询同步变慢；因此除周期重申外，
+     * 交互入口（鼠标监控切入快轮询的瞬间）也会调用本方法即时恢复，
+     * 消除"待机恢复 → 用户首次交互"之间的感知延迟窗口。</p>
+     */
+    public static void affirmHighResolutionTimer() {
+        try {
+            Winmm.INSTANCE.timeBeginPeriod(1);
+        } catch (Throwable ignored) {
+        }
     }
 
     private static void disableHighResolutionTimer() {
@@ -350,6 +381,36 @@ public class IslandApplication {
                     + daemonExe.getAbsolutePath());
         }
 
+        // ── WechatNotifyDaemon (.NET 8 UserNotificationListener 微信通知守护进程) ──
+        File wechatDaemonExe = new File(baseDir, "WechatNotifyDaemon.exe");
+        if (wechatDaemonExe.exists()) {
+            if (isProcessRunning("WechatNotifyDaemon")) {
+                AppLogger.info("IslandApplication", "WechatNotifyDaemon 已在运行，跳过启动");
+            } else {
+                startDaemon(new ProcessBuilder(wechatDaemonExe.getAbsolutePath())
+                        .directory(new File(baseDir)), "WechatNotifyDaemon", baseDir);
+            }
+        } else {
+            // 微信提醒为非关键功能：缺失仅告警，不影响应用整体可用性
+            AppLogger.warn("IslandApplication", "WechatNotifyDaemon.exe 未找到: "
+                    + wechatDaemonExe.getAbsolutePath() + "（微信消息提醒不可用）");
+        }
+
+        // ── QqNotifyDaemon (.NET 8 WinRT 通知采集的 QQ 通知守护进程) ──
+        File qqDaemonExe = new File(baseDir, "QqNotifyDaemon.exe");
+        if (qqDaemonExe.exists()) {
+            if (isProcessRunning("QqNotifyDaemon")) {
+                AppLogger.info("IslandApplication", "QqNotifyDaemon 已在运行，跳过启动");
+            } else {
+                startDaemon(new ProcessBuilder(qqDaemonExe.getAbsolutePath())
+                        .directory(new File(baseDir)), "QqNotifyDaemon", baseDir);
+            }
+        } else {
+            // QQ 提醒为非关键功能：缺失仅告警，不影响应用整体可用性
+            AppLogger.warn("IslandApplication", "QqNotifyDaemon.exe 未找到: "
+                    + qqDaemonExe.getAbsolutePath() + "（QQ 消息提醒不可用）");
+        }
+
         // ── ncm-server (网易云 API 代理，默认端口 3000) ──
         File ncmExe = new File(baseDir, "ncm-server.exe");
         if (ncmExe.exists()) {
@@ -364,16 +425,18 @@ public class IslandApplication {
                     + ncmExe.getAbsolutePath());
         }
 
-        // ── qqmusic-api (QQ音乐 API 代理，端口 3300) ──
+        // ── qqmusic-api (QQ音乐 API 代理，端口 3301；3300 让给 qishui-api 使用其默认端口) ──
         String nodeExe = AppConstants.findNodeExecutable();
         File qqmusicDir = new File(baseDir, "QQMusicapi");
         File serverJs = new File(qqmusicDir, "src" + File.separator + "server.js");
         if (nodeExe != null && qqmusicDir.isDirectory() && serverJs.exists()) {
-            if (isPortInUse(3300)) {
-                AppLogger.info("IslandApplication", "qqmusic-api 已在运行（端口 3300），跳过启动");
+            if (isPortInUse(3301)) {
+                AppLogger.info("IslandApplication", "qqmusic-api 已在运行（端口 3301），跳过启动");
             } else {
-                startDaemon(new ProcessBuilder(nodeExe, "src" + File.separator + "server.js")
-                        .directory(qqmusicDir), "qqmusic-api", baseDir);
+                ProcessBuilder qqPb = new ProcessBuilder(nodeExe, "src" + File.separator + "server.js")
+                        .directory(qqmusicDir);
+                qqPb.environment().put("PORT", "3301");
+                startDaemon(qqPb, "qqmusic-api", baseDir);
             }
         } else {
             if (nodeExe == null) {
@@ -383,6 +446,23 @@ public class IslandApplication {
                 AppLogger.error("IslandApplication", "qqmusic-api 未能启动: "
                         + "QQMusicapi 目录不完整");
             }
+        }
+
+        // ── qishui-api (汽水音乐 API 代理，默认端口 3300；qqmusic-api 已改让到 3301) ──
+        File qishuiDir = new File(baseDir, "qishui-api");
+        File qishuiAppJs = new File(qishuiDir, "app.js");
+        if (nodeExe != null && qishuiDir.isDirectory() && qishuiAppJs.exists()) {
+            if (isPortInUse(3300)) {
+                AppLogger.info("IslandApplication", "qishui-api 已在运行（端口 3300），跳过启动");
+            } else {
+                ProcessBuilder qishuiPb = new ProcessBuilder(nodeExe, "app.js")
+                        .directory(qishuiDir);
+                startDaemon(qishuiPb, "qishui-api", baseDir);
+            }
+        } else {
+            // 汽水音乐适配为非关键功能：未部署 qishui-api 目录时仅告警（歌词降级到 LRCLIB）
+            AppLogger.warn("IslandApplication", "qishui-api 未部署或 Node.js 缺失: "
+                    + qishuiDir.getAbsolutePath() + "（汽水音乐歌词/封面不可用）");
         }
     }
 

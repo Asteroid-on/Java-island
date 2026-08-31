@@ -6,6 +6,7 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -21,7 +22,33 @@ public final class LrclibLyricsProvider implements LyricsProvider {
     @Override
     public List<LyricItem> fetchLyrics(String title, String artist) {
         List<LyricItem> lines = get(title, artist);
-        return lines.isEmpty() ? search(title, artist) : lines;
+        if (!lines.isEmpty()) return lines;
+        // 多歌手串（"尹未来, Bizzy, Tiger JK"）全量查询命中率低，逐级截断重试：
+        // 完整串 → 前两位 → 仅首位（实测首艺术家即可命中，组合名/别名由评分兼容）
+        List<LyricItem> bySearch = search(title, artist);
+        if (bySearch.isEmpty()) {
+            for (String reduced : reducedArtists(artist)) {
+                bySearch = search(title, reduced);
+                if (!bySearch.isEmpty()) break;
+            }
+        }
+        return bySearch;
+    }
+
+    /** 逗号分隔的多歌手逐级截断（不含自身与空结果），如 "a, b, c" → ["a, b", "a"] */
+    private static List<String> reducedArtists(String artist) {
+        List<String> out = new ArrayList<>();
+        String[] parts = artist.split(",");
+        if (parts.length < 2) return out;
+        for (int n = parts.length - 1; n >= 1; n--) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < n; i++) {
+                if (i > 0) sb.append(", ");
+                sb.append(parts[i].trim());
+            }
+            out.add(sb.toString());
+        }
+        return out;
     }
 
     @Override public String fetchCoverUrl(String title, String artist) { return ""; }
@@ -79,6 +106,7 @@ public final class LrclibLyricsProvider implements LyricsProvider {
                     if (!anl.isEmpty()) {
                         if (anl.equals(al)) score += 10;
                         else if (anl.contains(al) || al.contains(anl)) score += 5;
+                        else if (artistTokensOverlap(al, anl)) score += 4;
                     } else score += 2;
                     if (score > bestScore) {
                         String synced = LyricsService.extractJsonField(item, "syncedLyrics");
@@ -89,6 +117,26 @@ public final class LrclibLyricsProvider implements LyricsProvider {
             }
             return bestRaw != null ? LyricsService.parseLrc(bestRaw) : Collections.emptyList();
         } catch (Exception e) { return Collections.emptyList(); }
+    }
+
+    /**
+     * 多歌手部分匹配：两侧歌手串按逗号/斜杠/& 拆分为个体，任一对存在包含关系即命中。
+     * 应对库侧用组合名/别名登记（如 MFBTY(尹未来,타이거JK,Bizzy) vs 上报的 "尹未来, Bizzy, Tiger JK"），
+     * 括号别名部分一并参与匹配。为避免"jk"类短词误匹配，个体长度至少 3 才参与比较。
+     */
+    private static boolean artistTokensOverlap(String al, String anl) {
+        String[] mine = al.split("[,/＆&]+");
+        String[] theirs = anl.split("[,/＆&]+");
+        for (String a : mine) {
+            String at = a.replaceAll("[\\s()]", "");
+            if (at.length() < 3) continue;
+            for (String b : theirs) {
+                String bt = b.replaceAll("[\\s()]", "");
+                if (bt.length() < 3) continue;
+                if (at.contains(bt) || bt.contains(at)) return true;
+            }
+        }
+        return false;
     }
 
     private List<LyricItem> extract(String body) {

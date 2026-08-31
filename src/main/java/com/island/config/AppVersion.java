@@ -7,7 +7,7 @@ package com.island.config;
 public final class AppVersion {
 
     /** 当前应用版本号。 */
-    public static final String CURRENT = "1.1.1";
+    public static final String CURRENT = "1.2.2";
 
     private AppVersion() {
         // 工具类，禁止实例化

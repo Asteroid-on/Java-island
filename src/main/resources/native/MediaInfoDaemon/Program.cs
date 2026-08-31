@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -13,7 +13,7 @@ class Program
 
     static readonly string PosFile = Path.Combine(Path.GetTempPath(), "media_info.json");
     static readonly string ThumbFile = Path.Combine(Path.GetTempPath(), "media_thumb.bin");
-    static readonly string[] Players = ["cloudmusic", "QQMusic"];
+    static readonly string[] Players = ["cloudmusic", "QQMusic", "SodaMusic"];
 
     /// <summary>单实例互斥体：防止应用多次启动导致多个 daemon 并存（内存泄漏）</summary>
     static readonly bool SingletonCreated;
@@ -33,11 +33,18 @@ class Program
         "qqmusic.exe",      // QQ音乐 (含.exe后缀)
         "QQMusic.exe",      // QQ音乐 (驼峰+.exe)
         "tencent",          // 腾讯系 (兜底)
+        "sodamusic",        // 汽水音乐 (SodaMusic.exe)
+        "qishui",           // 汽水音乐 (qishui.com 系)
+        "luna.music",       // 汽水音乐 (com.luna.music 包名系)
+        "汽水音乐",          // 汽水音乐 (实测 SMTC AUMID 为中文名)
     ];
 
     static string _last = "";
     static GlobalSystemMediaTransportControlsSession? _s;
     static volatile bool _hasProc;
+
+    // 上次有效媒体属性（TryGetMediaPropertiesAsync 瞬态返回空时沿用）
+    static string _lastTitle = "", _lastArtist = "", _lastAlbum = "";
 
     // ── 暂停感知的插值：累积实际播放时长，排除暂停间隔 ──
     static long _accumulatedPlayTicks = 0;        // 已累积的实际播放时长（100ns ticks）
@@ -53,6 +60,11 @@ class Program
     static long _cachedEndTimeTicks = 0;
     static volatile bool _timelineUpdated = false;
 
+    // ── 会话丢失宽限：SMTC 会话瞬态抖动（浏览器会话抢占/系统短暂不可用）时，
+    //    连续 N 轮（500ms/轮）拿不到白名单会话才清空状态，避免面板偶发闪断 ──
+    static int _missStreak = 0;
+    const int MissGrace = 3;
+
     // ── 封面缩略图缓存：仅变化时重读 SMTC 流并写独立文件（不再内嵌 base64 进 JSON）──
     static byte[]? _thumbBytes = null;         // 上次读取的缩略图字节（会话内缓存，避免每 500ms 重读流）
     static string _thumbHash = "";             // 对应字节的 SHA256（前 16 字符）
@@ -60,6 +72,10 @@ class Program
 
     static async Task Main()
     {
+        // 控制台输出统一 UTF-8：daemon 输出重定向到 daemon.log，
+        // 默认控制台编码（中文 Windows 为 GBK 系）会让中文日志乱码。
+        Console.OutputEncoding = Encoding.UTF8;
+
         // 单实例保护：已有实例运行时直接退出，避免进程泄漏
         if (!SingletonCreated)
         {
@@ -109,11 +125,30 @@ class Program
             try
             {
                 var f = await GetS();
-                if (f != null && f != _s) { if (_s != null) { _s.TimelinePropertiesChanged -= OnTimelineChanged; _s.PlaybackInfoChanged -= OnChanged; _s.MediaPropertiesChanged -= OnChanged; } _s = f; _s.TimelinePropertiesChanged += OnTimelineChanged; _s.PlaybackInfoChanged += OnChanged; _s.MediaPropertiesChanged += OnChanged; }
-                else if (f == null) _s = null;
-                _hasProc = ScanProc();
-                if (_s != null) await Flush();
-                else await FlushEmpty();
+                if (f != null)
+                {
+                    _missStreak = 0;
+                    if (f != _s) { if (_s != null) { _s.TimelinePropertiesChanged -= OnTimelineChanged; _s.PlaybackInfoChanged -= OnChanged; _s.MediaPropertiesChanged -= OnChanged; } _s = f; _s.TimelinePropertiesChanged += OnTimelineChanged; _s.PlaybackInfoChanged += OnChanged; _s.MediaPropertiesChanged += OnChanged; }
+                    _hasProc = ScanProc();
+                    await Flush();
+                }
+                else
+                {
+                    _hasProc = ScanProc();
+                    _missStreak++;
+                    if (_missStreak >= MissGrace)
+                    {
+                        // 连续多轮无白名单会话 → 确认真实丢失，清空状态（保留上次会话则先解绑事件）
+                        if (_s != null)
+                        {
+                            Console.Error.WriteLine($"[Daemon] 会话连续 {_missStreak} 轮未命中，清空状态");
+                            try { _s.TimelinePropertiesChanged -= OnTimelineChanged; _s.PlaybackInfoChanged -= OnChanged; _s.MediaPropertiesChanged -= OnChanged; } catch { }
+                            _s = null;
+                        }
+                        await FlushEmpty();
+                    }
+                    // 宽限期内保留上次会话数据，不写文件，避免瞬态抖动导致面板闪断
+                }
             }
             catch { }
             await Task.Delay(500);
@@ -126,9 +161,9 @@ class Program
     static bool IsSourceWhitelistedAndRunning(string src) {
         if (string.IsNullOrEmpty(src)) return false;
         var srcLower = src.ToLowerInvariant();
-        // 1. 白名单检查
+        // 1. 白名单检查（中文条目如"汽水音乐"不受 ToLower 影响，直接 Contains 即可）
         if (!SrcWhitelist.Any(w => srcLower.Contains(w))) return false;
-        // 2. 进程运行检查（白名单匹配但不在 Players 进程名中 → 仍视为有效，如 UWP）
+        // 2. 进程运行检查（白名单匹配但不在 Players 进程名中 → 仍视为有效，如 UWP/中文名 AUMID）
         foreach (var n in Players) {
             if (srcLower.Contains(n.ToLowerInvariant())) {
                 try { return Process.GetProcessesByName(n).Length > 0; }
@@ -138,6 +173,36 @@ class Program
         return true;
     }
 
+    /// <summary>
+    /// 白名单未命中诊断日志去重：同一 SourceAppUserModelId 只记录一次。
+    /// 旧版每 500ms 轮询都打一条（如浏览器 SMTC 会话长期存在时，
+    /// daemon.log 会被同一行刷到数 MB），改为按唯一源去重。
+    /// </summary>
+    static readonly HashSet<string> _loggedMisses = new(StringComparer.OrdinalIgnoreCase);
+
+    static void LogWhitelistMiss(string src)
+    {
+        lock (_loggedMisses)
+        {
+            if (!_loggedMisses.Add(src)) return;
+        }
+        var hex = string.Join(" ", src.Select(c => ((int)c).ToString("X2")));
+        Console.Error.WriteLine($"[Daemon] ⚠ 白名单未命中: \"{src}\" (hex: {hex})（同源后续不再重复记录）");
+    }
+
+    /// <summary>
+    /// 会话选择结果日志去重：仅在选择结果（源+状态）变化时记录。
+    /// 旧版每 500ms 轮询都打一条选择日志，单一会话长期存在时会刷屏。
+    /// </summary>
+    static string? _lastSelectLogKey;
+
+    static void LogSelect(string key, string msg)
+    {
+        if (_lastSelectLogKey == key) return;
+        _lastSelectLogKey = key;
+        Console.Error.WriteLine(msg);
+    }
+
     /// <summary>检查 SMTC 会话是否属于白名单播放器。</summary>
     static bool IsWhitelistedSession(GlobalSystemMediaTransportControlsSession? x) {
         if (x == null) return false;
@@ -145,13 +210,36 @@ class Program
             string src = x.SourceAppUserModelId ?? "";
             if (string.IsNullOrEmpty(src)) return false;
             bool matched = SrcWhitelist.Any(w => src.ToLowerInvariant().Contains(w));
-            if (!matched) {
-                // 诊断：输出未命中白名单的 SourceAppUserModelId 及其 hex 编码
-                var hex = string.Join(" ", src.Select(c => ((int)c).ToString("X2")));
-                Console.Error.WriteLine($"[Daemon] ⚠ 白名单未命中: \"{src}\" (hex: {hex})");
-            }
+            if (!matched) LogWhitelistMiss(src);
             return matched;
         } catch { return false; }
+    }
+
+    /// <summary>
+    /// 获取 SMTC 会话管理器（带超时兜底）。
+    ///
+    /// <para>实测发现系统 GSMTC 服务可能整体挂起（某些播放器会话异常时，
+    /// RequestAsync 永不返回）。无超时时整个 daemon 会卷死在 Main/Loop 的
+    /// await 上，hasMusicProcess 等状态也无法再写入。加 2.5s 超时，
+    /// 挂起时按无会话处理（宽限计数照常走），不阻塞其余逻辑。</para>
+    /// </summary>
+    static int _reqTimeoutCount = 0;
+
+    static async Task<GlobalSystemMediaTransportControlsSessionManager?> RequestManagerWithTimeout()
+    {
+        try
+        {
+            var task = GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask();
+            var completed = await Task.WhenAny(task, Task.Delay(2500));
+            if (completed != task)
+            {
+                if (++_reqTimeoutCount == 1 || _reqTimeoutCount % 120 == 0)
+                    Console.Error.WriteLine($"[Daemon] ⚠ SMTC RequestAsync 超时 x{_reqTimeoutCount}（系统媒体服务挂起），本轮按无会话处理");
+                return null;
+            }
+            return await task;
+        }
+        catch { return null; }
     }
 
     /// <summary>
@@ -169,7 +257,8 @@ class Program
     {
         try
         {
-            var m = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+            var m = await RequestManagerWithTimeout();
+            if (m == null) return null;
 
             // ── 1. 收集所有会话 ──
             var sessions = new List<GlobalSystemMediaTransportControlsSession>();
@@ -185,8 +274,7 @@ class Program
                     if (string.IsNullOrEmpty(src)) continue;
                     if (!SrcWhitelist.Any(w => src.ToLowerInvariant().Contains(w)))
                     {
-                        var hex = string.Join(" ", src.Select(c => ((int)c).ToString("X2")));
-                        Console.Error.WriteLine($"[Daemon] ⚠ 白名单未命中: \"{src}\" (hex: {hex})");
+                        LogWhitelistMiss(src);
                         continue;
                     }
                     string status = "Closed";
@@ -199,15 +287,13 @@ class Program
 
             if (whitelisted.Count == 0)
             {
-                // 所有会话均不在白名单 → 兜底：检测到音乐进程在运行 → 使用第一个会话
+                // 所有会话均不在白名单（如仅剩浏览器 MSEdge 会话）→ 返回 null，
+                // 交由 Loop 的宽限计数处理；不再兜底采用非白名单会话——
+                // 其 hasSession 必然为 false（白名单校验不通过），只会污染面板状态。
                 if (sessions.Count > 0)
                 {
-                    Console.Error.WriteLine($"[Daemon] 所有 {sessions.Count} 个会话均不在白名单 (首: {sessions[0].SourceAppUserModelId})");
-                    if (ScanProc())
-                    {
-                        Console.Error.WriteLine($"[Daemon] 兜底：音乐进程在运行，使用首个会话: {sessions[0].SourceAppUserModelId}");
-                        return sessions[0];
-                    }
+                    LogSelect($"allMiss:{sessions.Count}:{sessions[0].SourceAppUserModelId}",
+                        $"[Daemon] 所有 {sessions.Count} 个会话均不在白名单 (首: {sessions[0].SourceAppUserModelId})");
                 }
                 return null;
             }
@@ -217,7 +303,8 @@ class Program
                 w.status.Equals("Playing", StringComparison.OrdinalIgnoreCase));
             if (playing.session != null)
             {
-                Console.Error.WriteLine($"[Daemon] ✅ Playing 优先 → {playing.src} status={playing.status}");
+                LogSelect($"playing:{playing.src}",
+                    $"[Daemon] ✅ Playing 优先 → {playing.src} status={playing.status}");
                 return playing.session;
             }
 
@@ -226,7 +313,7 @@ class Program
                 w.status.Equals("Paused", StringComparison.OrdinalIgnoreCase));
             if (paused.session != null)
             {
-                Console.Error.WriteLine($"[Daemon] ⏸ Paused 会话 → {paused.src}");
+                LogSelect($"paused:{paused.src}", $"[Daemon] ⏸ Paused 会话 → {paused.src}");
                 return paused.session;
             }
 
@@ -234,22 +321,20 @@ class Program
             var cur = m.GetCurrentSession();
             if (IsWhitelistedSession(cur))
             {
-                Console.Error.WriteLine($"[Daemon] GetCurrentSession → {cur!.SourceAppUserModelId}");
+                LogSelect($"cur:{cur!.SourceAppUserModelId}",
+                    $"[Daemon] GetCurrentSession → {cur.SourceAppUserModelId}");
                 return cur;
             }
             if (cur != null)
             {
-                Console.Error.WriteLine($"[Daemon] GetCurrentSession 被白名单拦截: {cur.SourceAppUserModelId}");
-                if (ScanProc())
-                {
-                    Console.Error.WriteLine($"[Daemon] 兜底(GetCurrentSession)：音乐进程在运行，使用此会话: {cur.SourceAppUserModelId}");
-                    return cur;
-                }
+                LogSelect($"curBlocked:{cur.SourceAppUserModelId}",
+                    $"[Daemon] GetCurrentSession 被白名单拦截: {cur.SourceAppUserModelId}");
             }
 
             // ── 6. 优先级 4：第一个白名单会话（Closed/Stopped 等）──
             var first = whitelisted[0];
-            Console.Error.WriteLine($"[Daemon] 首个白名单会话: {first.src} status={first.status}");
+            LogSelect($"first:{first.src}:{first.status}",
+                $"[Daemon] 首个白名单会话: {first.src} status={first.status}");
             return first.session;
         }
         catch { return null; }
@@ -269,6 +354,14 @@ class Program
             {
                 var mp = await _s.TryGetMediaPropertiesAsync();
                 t = Esc(mp.Title); a = Esc(mp.Artist); al = Esc(mp.AlbumTitle);
+                if (!string.IsNullOrEmpty(t)) { _lastTitle = t; _lastArtist = a; _lastAlbum = al; }
+                else if (!string.IsNullOrEmpty(_lastTitle) && src.Equals(_lastSrcAppId, StringComparison.OrdinalIgnoreCase))
+                {
+                    // SMTC 偶发返回空媒体属性（切歌瞬间/播放器未及时更新）→ 沿用上次标题，
+                    // 避免 hasSession 因空标题瞬态置 false 导致面板闪断（下一轮真实标题到达即覆盖）
+                    t = _lastTitle; a = _lastArtist; al = _lastAlbum;
+                    Console.Error.WriteLine("[Daemon] 媒体属性瞬态为空，沿用上次标题: " + t);
+                }
             if (mp.Thumbnail != null) try
             {
                 if (_thumbDirty)
@@ -316,7 +409,7 @@ class Program
                 Console.Error.WriteLine($"[Daemon] SMTC(cached) pos={rawPTicks / 10000}ms end={rawETicks / 10000}ms");
             }
 
-            // 第 1b 层：缓存为空时回退到轮询（3 次快速重试，50ms 间隔）
+            // 第 1b 层：缓存为空/为 0 时回退到轮询（3 次快速重试，50ms 间隔）
             if (rawPTicks == 0)
             {
                 int smtcFailures = 0;
@@ -404,9 +497,12 @@ class Program
                         }
                     }
                 }
+
                 _wasPlaying = isPlaying;
 
-                // SMTC 拿到位置 → 使用；否则保留上次值
+                // SMTC 拿到位置 → 使用；否则保留上次值。
+                // 注：汽水音乐播放中位置静止，播放期推进由 Java 层汽水专用估计器完成（见 MusicSessionController），
+                // 本进程保持原始上报语义，不影响 QQ音乐/网易云。
                 if (rawPTicks > 0)
                 {
                     p = rawPTicks;
@@ -433,6 +529,9 @@ class Program
             _lastSrcAppId = "";
             _lastTrackId = "";
             _zeroPositionCount = 0;
+            _lastTitle = "";
+            _lastArtist = "";
+            _lastAlbum = "";
             _thumbBytes = null;                   // 会话丢失 → 清空封面缓存
             _thumbHash = "";
             _thumbDirty = true;

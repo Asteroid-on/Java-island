@@ -261,15 +261,10 @@ public class SettingsDialog extends JDialog {
         }));
         p.add(Box.createVerticalStrut(12));
 
-        JCheckBox autoCollapseCb = new JCheckBox("扩展岛空闲 10 分钟后自动收起");
-        autoCollapseCb.setFont(F_BODY);
-        autoCollapseCb.setForeground(C_TEXT);
-        autoCollapseCb.setBackground(C_CARD);
-        autoCollapseCb.setFocusPainted(false);
-        autoCollapseCb.setBorder(new EmptyBorder(2, 0, 2, 0));
-        autoCollapseCb.setSelected(AppConstants.isAutoCollapseExpandedEnabled());
-        autoCollapseCb.addActionListener(e ->
-                AppConstants.setAutoCollapseExpandedEnabled(autoCollapseCb.isSelected()));
+        ToggleSwitch autoCollapseSwitch =
+                new ToggleSwitch(AppConstants.isAutoCollapseExpandedEnabled());
+        autoCollapseSwitch.addActionListener(e ->
+                AppConstants.setAutoCollapseExpandedEnabled(autoCollapseSwitch.isSelected()));
 
         JLabel autoCollapseTip = new JLabel("仅主动点击展开时生效；显示歌词或摄像头/麦克风监测指示期间不会自动收起。");
         autoCollapseTip.setFont(F_SMALL);
@@ -277,7 +272,33 @@ public class SettingsDialog extends JDialog {
 
         p.add(Box.createVerticalStrut(12));
         p.add(sectionCard("扩展岛", new Component[]{
-                autoCollapseCb, Box.createVerticalStrut(4), autoCollapseTip
+                switchRow("扩展岛空闲 10 分钟后自动收起", autoCollapseSwitch),
+                Box.createVerticalStrut(4), autoCollapseTip
+        }));
+
+        ToggleSwitch wechatSwitch = new ToggleSwitch(AppConstants.isWechatNotificationEnabled());
+        wechatSwitch.addActionListener(e ->
+                AppConstants.setWechatNotificationEnabled(wechatSwitch.isSelected()));
+
+        JLabel wechatTip = new JLabel("关闭后不再弹出微信消息提醒；开启后即时生效，无需重启。");
+        wechatTip.setFont(F_SMALL);
+        wechatTip.setForeground(C_MUTED);
+
+        ToggleSwitch qqSwitch = new ToggleSwitch(AppConstants.isQqNotificationEnabled());
+        qqSwitch.addActionListener(e ->
+                AppConstants.setQqNotificationEnabled(qqSwitch.isSelected()));
+
+        JLabel qqTip = new JLabel("关闭后不再弹出 QQ 消息提醒；开启后即时生效，无需重启。");
+        qqTip.setFont(F_SMALL);
+        qqTip.setForeground(C_MUTED);
+
+        p.add(Box.createVerticalStrut(12));
+        p.add(sectionCard("通知", new Component[]{
+                switchRow("微信消息弹窗提醒", wechatSwitch),
+                Box.createVerticalStrut(4), wechatTip,
+                Box.createVerticalStrut(10),
+                switchRow("QQ 消息弹窗提醒", qqSwitch),
+                Box.createVerticalStrut(4), qqTip
         }));
         return p;
     }
@@ -873,6 +894,22 @@ public class SettingsDialog extends JDialog {
         lbl.setForeground(C_SUBTEXT);
         row.add(lbl);
         row.add(field);
+        return row;
+    }
+
+    /** 开关行：左侧说明文字 + 右侧滑块开关（常规页各开关统一布局）。 */
+    private JPanel switchRow(String label, ToggleSwitch sw) {
+        JPanel row = new JPanel(new BorderLayout(10, 0));
+        row.setOpaque(false);
+        JLabel lbl = new JLabel(label);
+        lbl.setFont(F_BODY);
+        lbl.setForeground(C_TEXT);
+        row.add(lbl, BorderLayout.WEST);
+        row.add(sw, BorderLayout.EAST);
+        // 限制行高为内容固有高度：避免外层 BoxLayout 因富余空间纵向拉伸本行，
+        // 导致 BorderLayout 把滑块（EAST）拉高、圆形滑块偏离轨道中心。
+        int rowH = Math.max(lbl.getPreferredSize().height, sw.getPreferredSize().height);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, rowH));
         return row;
     }
 

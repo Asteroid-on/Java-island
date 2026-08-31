@@ -39,7 +39,8 @@ public final class LyricsService {
     public LyricsService() {
         this.dispatcher = new LyricsDispatcher()
                 .register(new NeteaseLyricsProvider())
-                .register(new QQLyricsProvider());
+                .register(new QQLyricsProvider())
+                .register(new QishuiLyricsProvider());
         AppConstants.setOnCacheDirChange(this::reinitCache);
     }
 

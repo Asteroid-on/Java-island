@@ -13,7 +13,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * QQ音乐歌词提供者 — QQMusicapi (localhost:3300)。
+ * QQ音乐歌词提供者 — QQMusicapi (localhost:3301)。
  *
  * <p>QQ 音乐歌词使用 QRC（逐字歌词）格式，解密后为紧凑文本：
  * {@code [startMs,durationMs]歌词文本(wordStart,wordDur)...}
@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
  */
 public final class QQLyricsProvider implements LyricsProvider {
 
-    private static final String QQ_API = "http://localhost:3300";
+    private static final String QQ_API = "http://localhost:3301";
 
     // 紧凑 QRC 行: [数字,数字]...
     private static final Pattern QRC_LINE = Pattern.compile("^\\[(\\d+),(\\d+)\\](.*)$");

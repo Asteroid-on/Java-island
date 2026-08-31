@@ -1,5 +1,6 @@
 package com.island.tray;
 
+import com.island.IslandApplication;
 import com.island.config.AppConstants;
 import com.island.island.model.IslandState;
 import com.island.island.service.DynamicIslandService;
@@ -466,6 +467,8 @@ public class SystemTrayManager {
         private volatile boolean running = true;
         /** 前台无边框全屏窗口状态（日志去重用，避免重复刷屏） */
         private boolean lastFullscreenFg = false;
+        /** 上一轮轮询模式：检测慢→快翻转，用户开始交互的瞬间即时重申高精度定时器 */
+        private boolean lastFastPoll = false;
 
         MouseInfoMonitor() {
             // 游戏抢占 CPU 时默认优先级会导致轮询线程调度延迟增大（岛响应变慢），提高优先级
@@ -564,6 +567,13 @@ public class SystemTrayManager {
                     boolean fastPoll = isNearTopEdge || isMouseOverIsland
                             || (service.getState() != IslandState.HIDDEN)
                             || showHideAnimRunning || islandWindow.isVisible();
+                    // 切入快轮询（用户开始交互）的瞬间立即重申 1ms 定时器粒度：
+                    // 待机恢复后粒度可能回退为 15.6ms，此时 sleep(16) 实际 ~31ms、
+                    // Swing Timer 被钳到 15.6ms，触发与动画都会变慢；即时重申消除首次交互延迟。
+                    if (fastPoll && !lastFastPoll) {
+                        IslandApplication.affirmHighResolutionTimer();
+                    }
+                    lastFastPoll = fastPoll;
                     Thread.sleep(fastPoll
                             ? AppConstants.FAST_POLL_INTERVAL
                             : AppConstants.HIDE_CHECK_INTERVAL);
@@ -590,7 +600,11 @@ public class SystemTrayManager {
                         }
                     }
                 } catch (InterruptedException e) {
-                    break;
+                    // dispose 触发的正常退出（running 已置 false）；
+                    // 意外中断则吞掉继续轮询，防止线程暴毙导致岛彻底不响应鼠标
+                    if (!running) {
+                        break;
+                    }
                 }
             }
         }
@@ -603,6 +617,24 @@ public class SystemTrayManager {
     /** 显示动画（线程安全：内部切 EDT 执行，重复触发去重，反向触发自动接续） */
     public void animateShow() {
         startShowHideAnimation(true);
+    }
+
+    /**
+     * 快速显示动画（微信消息通知即时弹出用）：两阶段时长压缩到约 1/3，
+     * 保留视觉过渡的同时把用户感知延迟降到约 100ms。
+     */
+    public void animateShowFast() {
+        SwingUtilities.invokeLater(() -> {
+            if (showHideAnimRunning && showHideAnimToVisible) {
+                // 常规动画进行中：不打断，保持原有节奏
+                return;
+            }
+            stopShowHideAnimation();
+            showHideAnimRunning = true;
+            showHideAnimToVisible = true;
+            runShowAnimation(AppConstants.ANIMATION_DURATION_PHASE1 / 3.0,
+                    AppConstants.ANIMATION_DURATION_PHASE2 / 3.0);
+        });
     }
 
     /** 隐藏动画（线程安全：内部切 EDT 执行，重复触发去重，反向触发自动接续） */
@@ -625,7 +657,8 @@ public class SystemTrayManager {
             showHideAnimRunning = true;
             showHideAnimToVisible = toVisible;
             if (toVisible) {
-                runShowAnimation();
+                runShowAnimation(AppConstants.ANIMATION_DURATION_PHASE1,
+                        AppConstants.ANIMATION_DURATION_PHASE2);
             } else {
                 runHideAnimation();
             }
@@ -640,7 +673,7 @@ public class SystemTrayManager {
         showHideAnimRunning = false;
     }
 
-    private void runShowAnimation() {
+    private void runShowAnimation(double durationPhase1, double durationPhase2) {
         Point location = calculateIslandLocation();
         int targetWidth = AppConstants.DEFAULT_WIDTH;
         int targetHeight = AppConstants.DEFAULT_HEIGHT;
@@ -676,8 +709,6 @@ public class SystemTrayManager {
         javax.swing.Timer timer = new javax.swing.Timer(AppConstants.ANIMATION_FRAME_INTERVAL, null);
         final int[] phase = {0}; // 0=向下移动, 1=展开
         final double[] progress = {0.0};
-        final double durationPhase1 = AppConstants.ANIMATION_DURATION_PHASE1;
-        final double durationPhase2 = AppConstants.ANIMATION_DURATION_PHASE2;
 
         timer.addActionListener(e -> {
             // 每帧重申不抢焦点置顶：动画期间游戏激活会把 TOPMOST 窗口重排到自己之上，

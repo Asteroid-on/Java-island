@@ -33,6 +33,7 @@ class MediaInfoHelper
         "spotify.exe",     // Spotify
         "foobar2000.exe",  // foobar2000
         "music.ui.exe",    // Apple Music
+        "SodaMusic.exe",   // 汽水音乐
         "wmplayer.exe"     // Windows Media Player
     };
 

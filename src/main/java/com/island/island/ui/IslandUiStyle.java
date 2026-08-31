@@ -3,6 +3,8 @@ package com.island.island.ui;
 import java.awt.Color;
 import java.awt.Font;
 import java.awt.GraphicsEnvironment;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * 动态岛 UI 共享样式常量：颜色、字体、动画时长与布局尺寸。
@@ -28,14 +30,55 @@ public final class IslandUiStyle {
     public static final Font WEATHER_TEMP_FONT = new Font("Microsoft YaHei", Font.BOLD, 14);
     public static final Font WEATHER_COND_FONT = new Font("Microsoft YaHei", Font.PLAIN, 10);
     public static final Font NOTIFY_TITLE_FONT = new Font("Microsoft YaHei", Font.BOLD, 16);
+    /** 微信通知内容字体（主文案大字居中）：宋体（Windows 内置，简体字形全覆盖） */
+    public static final Font WECHAT_CONTENT_FONT = new Font("SimSun", Font.BOLD, 12);
+    /** QQ 通知内容字体：与微信通知保持一致的宋体规范 */
+    public static final Font QQ_CONTENT_FONT = new Font("SimSun", Font.BOLD, 12);
     public static final Font MUSIC_TITLE_FONT = new Font("Microsoft YaHei", Font.PLAIN, 11);
     public static final Font MUSIC_ARTIST_FONT = new Font("Microsoft YaHei", Font.PLAIN, 10);
     public static final Font MUSIC_LYRICS_FONT = new Font("Microsoft YaHei", Font.BOLD, 14);
+
+    /**
+     * 多语种字形回退候选（主字体 Microsoft YaHei 不含韩/日字形，直接绘制会显示方框）。
+     * 按文本能否完整显示逐个尝试，命中即用；全部未命中时退回主字体保持原行为。
+     */
+    private static final String[] GLYPH_FALLBACK_FONTS = {
+            "Malgun Gothic", "Malgun Gothic Semilight", "Yu Gothic", "Meiryo", "Segoe UI"
+    };
+    /** 回退字体缓存：键为"字体名|样式|字号"，避免逐帧/逐次 new Font */
+    private static final Map<String, Font> FALLBACK_FONT_CACHE = new HashMap<>();
+
+    /**
+     * 按文本字形解析实际可显示的字体：主字体能完整显示则原样返回；
+     * 否则在候选字体中选首个能完整显示的（韩文/日文等）。
+     */
+    public static Font resolveDisplayFont(Font base, String text) {
+        if (text == null || text.isEmpty() || base.canDisplayUpTo(text) < 0) return base;
+        for (String name : GLYPH_FALLBACK_FONTS) {
+            String key = name + "|" + base.getStyle() + "|" + base.getSize();
+            Font f;
+            synchronized (FALLBACK_FONT_CACHE) {
+                f = FALLBACK_FONT_CACHE.get(key);
+                if (f == null) {
+                    f = new Font(name, base.getStyle(), base.getSize());
+                    FALLBACK_FONT_CACHE.put(key, f);
+                }
+            }
+            // new Font 找不到字体时会静默回退为 Dialog，需校验字体名真实存在再信任其字形判断
+            if (!f.getFamily().equalsIgnoreCase(name) && !f.getFontName().equalsIgnoreCase(name)) continue;
+            if (f.canDisplayUpTo(text) < 0) return f;
+        }
+        return base;
+    }
 
     // ── 主岛通知动画 ──
     public static final int ANIM_DURATION_MS = 650;
     public static final int ANIM_FRAME_MS = 16;
     public static final int NOTIFICATION_DISPLAY_TIME = 2000;
+    /** 微信消息通知展示时长（灵动岛风格：5 秒后自动收起） */
+    public static final int WECHAT_NOTIFICATION_DISPLAY_TIME = 5000;
+    /** QQ 消息通知展示时长（与微信一致：5 秒后自动收起） */
+    public static final int QQ_NOTIFICATION_DISPLAY_TIME = 5000;
     public static final double TEXT_VISIBLE_THRESHOLD_RATIO = 2.0 / 3.0;
 
     // ── 扩展岛窗口与展开/收起动画 ──
@@ -108,23 +151,27 @@ public final class IslandUiStyle {
 
     // ── DPI 自适应动画帧策略 ──
 
-    /** 默认屏 DPI 缩放缓存（设备像素/逻辑像素；Per-Monitor V2 下窗口跨屏时以所在屏为准，这里取默认屏近似） */
+    /** 最近一次成功查询的 DPI 缩放（仅作实时查询失败时的兜底，不再是长期缓存） */
     private static volatile Double cachedUiScale;
 
-    /** 当前 UI 缩放比例（默认屏设备像素/逻辑像素，100% = 1.0） */
+    /**
+     * 当前 UI 缩放比例（默认屏设备像素/逻辑像素，100% = 1.0）。
+     *
+     * <p>每次调用实时查询：系统缩放/分辨率可能在运行期变化（用户改缩放、待机恢复、
+     * 外接显示器插拔），旧版一次缓存终身有效会把陈旧值锁死，导致动画帧间隔判定错误。
+     * 调用点均为动画启动时的低频场景，实时查询成本可忽略；查询失败时回退上次成功值。</p>
+     */
     public static double currentUiScale() {
-        Double scale = cachedUiScale;
-        if (scale == null) {
-            try {
-                scale = GraphicsEnvironment.getLocalGraphicsEnvironment()
-                        .getDefaultScreenDevice().getDefaultConfiguration()
-                        .getDefaultTransform().getScaleX();
-            } catch (Throwable t) {
-                scale = 1.0;
-            }
+        try {
+            double scale = GraphicsEnvironment.getLocalGraphicsEnvironment()
+                    .getDefaultScreenDevice().getDefaultConfiguration()
+                    .getDefaultTransform().getScaleX();
             cachedUiScale = scale;
+            return scale;
+        } catch (Throwable t) {
+            Double cached = cachedUiScale;
+            return cached != null ? cached : 1.0;
         }
-        return scale;
     }
 
     /**

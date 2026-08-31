@@ -256,6 +256,50 @@ public final class AppConstants {
         } catch (Exception ignored) { }
     }
 
+    // ── 微信消息弹窗 ──
+
+    private static final String PREF_KEY_WECHAT_NOTIFICATION = "wechat.notification";
+
+    /** 获取"微信消息弹窗"开关状态（默认开启）。 */
+    public static boolean isWechatNotificationEnabled() {
+        try {
+            return Preferences.userNodeForPackage(AppConstants.class)
+                    .getBoolean(PREF_KEY_WECHAT_NOTIFICATION, true);
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /** 设置"微信消息弹窗"开关状态并持久化到 Preferences。 */
+    public static void setWechatNotificationEnabled(boolean enabled) {
+        try {
+            Preferences.userNodeForPackage(AppConstants.class)
+                    .putBoolean(PREF_KEY_WECHAT_NOTIFICATION, enabled);
+        } catch (Exception ignored) { }
+    }
+
+    // ── QQ 消息弹窗 ──
+
+    private static final String PREF_KEY_QQ_NOTIFICATION = "qq.notification";
+
+    /** 获取"QQ 消息弹窗"开关状态（默认开启）。 */
+    public static boolean isQqNotificationEnabled() {
+        try {
+            return Preferences.userNodeForPackage(AppConstants.class)
+                    .getBoolean(PREF_KEY_QQ_NOTIFICATION, true);
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /** 设置"QQ 消息弹窗"开关状态并持久化到 Preferences。 */
+    public static void setQqNotificationEnabled(boolean enabled) {
+        try {
+            Preferences.userNodeForPackage(AppConstants.class)
+                    .putBoolean(PREF_KEY_QQ_NOTIFICATION, enabled);
+        } catch (Exception ignored) { }
+    }
+
     // ── Node.js 路径查找 ──
 
     /**

@@ -39,6 +39,8 @@ class MusicSessionController {
     private volatile MusicInfo currentMusicInfo = MusicInfo.EMPTY;
     private int currentLyricIndex = -1;
     private volatile boolean fetchingLyrics = false;
+    /** 当前曲目歌词获取已结束但无结果（全部来源均未命中）：占位显示"暂无歌词"而非永远"加载中" */
+    private volatile boolean lyricsFetchFailed = false;
     private volatile boolean fetchingCover = false;
     private volatile String lastFetchedTrackId = "";
     private volatile String lastFetchedCoverTrackId = "";
@@ -51,11 +53,23 @@ class MusicSessionController {
     private String smTcCoverAppliedTrackId = "";
     /** 上一次处于严格播放状态的来源播放器标识，用于检测活跃播放器切换 */
     private String lastActiveSourceAppId = "";
-    // 仅使用 daemon 汇报的 positionTicks 作为歌词进度
-    // fallback 字段已废弃，wall-clock 自推进机制已移除
+    // 歌词进度基于 daemon 汇报的 positionTicks；仅汽水音乐例外：
+    // 其 SMTC 位置只在事件时刻更新（播放中静止、状态高频抖动），由本地估计器外推推进。
+    // fallback 字段已废弃，wall-clock 自推进机制已移除（仅恢复为汽水专用形式）
     @Deprecated private long fallbackBaseMs = 0;
     @Deprecated private long fallbackStartMs = 0;
     private long lastDaemonEndTimeMs = 0;
+
+    // ── 汽水音乐播放位置本地估计器 ──
+    // 同步点：以 daemon 位置为锚，严格播放中按挂钟外推；暂停冻结；
+    // daemon 位置与估计偏差超容差（拖动 seek/切歌）→ 立即重新同步。
+    private static final long SODA_POS_SYNC_TOLERANCE_MS = 1500;
+    private long sodaSyncPosMs = -1;     // 同步点位置（毫秒），-1=未同步
+    private long sodaSyncWallMs = -1;    // 同步点系统时刻；-1=已冻结（暂停）
+    private long sodaFrozenPosMs = -1;   // 暂停冻结位置（恢复播放时作为新锚）
+    private String sodaSyncTrackId = "";
+    private long sodaLastDaemonPosMs = -1; // daemon 上次汇报值：仅“daemon 自身跳变”才是真 seek，
+                                           // 不能拿估计值与静态旧值比较（播放中旧值永远落后，会被误判为跳变反复拉回）
 
     MusicSessionController(ExpandedIslandController controller) {
         this.controller = controller;
@@ -69,6 +83,16 @@ class MusicSessionController {
 
     int getCurrentLyricIndex() {
         return currentLyricIndex;
+    }
+
+    /** 歌词获取是否进行中（供 MusicPanel 占位文案区分加载中/暂无歌词） */
+    boolean isFetchingLyrics() {
+        return fetchingLyrics;
+    }
+
+    /** 当前曲目歌词是否已确认获取失败（全部来源未命中） */
+    boolean isLyricsFetchFailed() {
+        return lyricsFetchFailed;
     }
 
     MusicInfo currentInfo() {
@@ -126,7 +150,9 @@ class MusicSessionController {
             currentLyricIndex = -1;
             lastDaemonEndTimeMs = 0;
             fetchingLyrics = false;
+            lyricsFetchFailed = false;
             fetchingCover = false;
+            resetSodaPositionEstimator();
             // 切歌：记录上一曲缩略图用于旧图识别，清空旧封面确保与新曲目严格对应
             prevTrackCoverBase64 = lastCoverBase64;
             lastCoverBase64 = "";
@@ -157,7 +183,9 @@ class MusicSessionController {
                 currentLyricIndex = -1;
                 lastDaemonEndTimeMs = 0;
                 fetchingLyrics = false;
+                lyricsFetchFailed = false;
                 fetchingCover = false;
+                resetSodaPositionEstimator();
                 prevTrackCoverBase64 = lastCoverBase64;
                 lastCoverBase64 = "";
                 lastTriedCoverBase64 = "";
@@ -350,7 +378,7 @@ class MusicSessionController {
         MusicPanel mp = controller.getMusicPanel();
         if (!mp.isInitialized() || info == null || lrcLines.isEmpty()) return;
         long daemonPos = info.getPositionTicks() / 10_000;
-        long pos = Math.max(daemonPos, 0) + 900;  // 提前0.9秒显示歌词
+        long pos = Math.max(effectivePositionMs(info, daemonPos), 0) + 900;  // 提前0.9秒显示歌词
         long end = info.getEndTimeTicks() / 10_000;
         if (end <= 0 && lastDaemonEndTimeMs > 0) {
             end = lastDaemonEndTimeMs;
@@ -367,6 +395,87 @@ class MusicSessionController {
             currentLyricIndex = idx;
             mp.repaintLyrics();
         }
+    }
+
+    // ═════════════════════════════════════
+    //  汽水音乐位置本地估计器（仅汽水生效，QQ音乐/网易云直接用 daemon 位置，零影响）
+    // ═════════════════════════════════════
+
+    /** 是否汽水音乐会话（与 QishuiLyricsProvider.supports 同规则） */
+    private static boolean isSodaSource(MusicInfo info) {
+        String src = info.getSourceAppId();
+        if (src == null || src.isEmpty()) return false;
+        String lower = src.toLowerCase();
+        return lower.contains("sodamusic") || lower.contains("qishui")
+                || lower.contains("luna.music") || src.contains("汽水音乐");
+    }
+
+    /** 切歌/切播放器/会话丢失时重置估计器 */
+    void resetSodaPositionEstimator() {
+        sodaSyncPosMs = -1;
+        sodaSyncWallMs = -1;
+        sodaFrozenPosMs = -1;
+        sodaSyncTrackId = "";
+        sodaLastDaemonPosMs = -1;
+    }
+
+    /**
+     * 歌词游标用的有效播放位置（毫秒）：
+     * 非汽水 → daemon 位置；汽水 → 同步点 + 挂钟外推，暂停冻结，
+     * daemon 位置跳变（拖动 seek）超容差时立即重新同步。
+     */
+    private long effectivePositionMs(MusicInfo info, long daemonPosMs) {
+        if (!isSodaSource(info)) return daemonPosMs;
+
+        String trackId = info.getTitle() + "|" + info.getArtist();
+        long now = System.currentTimeMillis();
+
+        // 首次同步 / 切歌：以 daemon 位置为锚（未报位置时从 0 开始外推）
+        if (sodaSyncPosMs < 0 || !trackId.equals(sodaSyncTrackId)) {
+            sodaSyncTrackId = trackId;
+            sodaSyncPosMs = Math.max(daemonPosMs, 0);
+            sodaSyncWallMs = info.isStrictlyPlaying() ? now : -1;
+            sodaFrozenPosMs = info.isStrictlyPlaying() ? -1 : sodaSyncPosMs;
+            sodaLastDaemonPosMs = daemonPosMs;
+            return sodaSyncPosMs;
+        }
+
+        // daemon 自身跳变检测：仅当汇报值相对上次变化超容差才是真 seek/缓冲跳变；
+        // 播放中 daemon 静态旧值保持不变 → 不触发重新同步，外推得以持续累积。
+        boolean daemonJumped = sodaLastDaemonPosMs >= 0 && daemonPosMs > 0
+                && Math.abs(daemonPosMs - sodaLastDaemonPosMs) > SODA_POS_SYNC_TOLERANCE_MS;
+        if (daemonPosMs > 0) sodaLastDaemonPosMs = daemonPosMs;
+
+        if (info.isStrictlyPlaying()) {
+            // 恢复播放：从冻结值重建锚点续推（若暂停期间有 seek，冻结值已是新位置）
+            if (sodaSyncWallMs < 0) {
+                sodaSyncPosMs = sodaFrozenPosMs > 0 ? sodaFrozenPosMs : sodaSyncPosMs;
+                sodaSyncWallMs = now;
+                sodaFrozenPosMs = -1;
+            }
+            long estimated = sodaSyncPosMs + (now - sodaSyncWallMs);
+            // daemon 值跳变（拖动进度条）→ 立即重新同步，游标跳到新位置并继续外推。
+            if (daemonJumped) {
+                System.out.println("[LyricProgress] 汽水位置重新同步: daemon=" + daemonPosMs
+                        + "ms estimated=" + estimated + "ms");
+                sodaSyncPosMs = daemonPosMs;
+                sodaSyncWallMs = now;
+                return daemonPosMs;
+            }
+            return estimated;
+        }
+
+        // 暂停/非严格播放：冻结当前估计值（游标停在暂停行）；
+        // daemon 跳变（暂停中拖动）时接受新值。
+        long frozen = sodaSyncWallMs > 0
+                ? sodaSyncPosMs + (now - sodaSyncWallMs)
+                : (sodaFrozenPosMs > 0 ? sodaFrozenPosMs : sodaSyncPosMs);
+        if (daemonJumped) {
+            frozen = daemonPosMs;
+        }
+        sodaFrozenPosMs = frozen;
+        sodaSyncWallMs = -1;
+        return frozen;
     }
 
     // ═══════════════════════════════════════════
@@ -404,6 +513,16 @@ class MusicSessionController {
                         // 确保定时器在运行（可能在歌词加载前已启动但因 lrcLines 为空而空转；
                         // 暂停状态下不会启动，见 startLyricScrollTimer 的 isStrictlyPlaying 守卫）
                         mp.startLyricScrollTimer();
+                    });
+                } else {
+                    // 全部来源未命中：标记失败，占位文案从"歌词加载中..."切为"暂无歌词"
+                    SwingUtilities.invokeLater(() -> {
+                        String currentTrackId = currentMusicInfo.getTitle() + "|" + currentMusicInfo.getArtist();
+                        if (trackId.equals(currentTrackId)) {
+                            lyricsFetchFailed = true;
+                            MusicPanel mp = controller.getMusicPanel();
+                            if (mp.isInitialized()) mp.repaintLyrics();
+                        }
                     });
                 }
             } finally {

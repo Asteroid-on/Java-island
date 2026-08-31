@@ -36,6 +36,16 @@ MediaInfoHelper.exe
 src/main/resources/native/MediaInfoDaemon/bin/
 src/main/resources/native/MediaInfoDaemon/obj/
 src/main/resources/native/MediaInfoDaemon/publish/
+WechatNotifyDaemon.exe
+WechatNotifyDaemon.pdb
+src/main/resources/native/WechatNotifyDaemon/bin/
+src/main/resources/native/WechatNotifyDaemon/obj/
+src/main/resources/native/WechatNotifyDaemon/publish/
+QqNotifyDaemon.exe
+QqNotifyDaemon.pdb
+src/main/resources/native/QqNotifyDaemon/bin/
+src/main/resources/native/QqNotifyDaemon/obj/
+src/main/resources/native/QqNotifyDaemon/publish/
 
 ### Maven ###
 target/
@@ -45,6 +55,11 @@ ncm-server.exe
 
 ### QQMusic API sub-project (own repo) ###
 QQMusicapi/
+
+### qishui-api 本地运行时文件（登录态/依赖/会话提取临时文件，不入库）###
+qishui-api/.env
+qishui-api/.session.tmp
+qishui-api/node_modules/
 
 ### IDE user-specific ###
 .idea/workspace.xml

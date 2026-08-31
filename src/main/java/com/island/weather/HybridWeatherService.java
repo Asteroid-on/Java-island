@@ -7,10 +7,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * 混合天气服务：聚合数据与彩云天气并行拉取、合并推送。
  * <p>聚合数据提供实时天气（温度/状况/湿度）与 7 天每日预报（无逐时）；
- * 彩云提供未来两天 48 小时逐时预报（点亮详情时间轴）与 3 天每日预报，
- * 同时作为聚合数据失败时的实时天气兜底源。两源任一刷新后合并为一条
- * {@link WeatherInfo} 推送给监听器：实时/每日优先取聚合（失败回退彩云），
- * 逐时恒取彩云（彩云未就绪/失败时为空，UI 显示"暂无逐时预报"兜底）。</p>
+ * 彩云提供未来两天 48 小时逐时预报（点亮详情时间轴）、3 天每日预报与
+ * 分钟级雷达降水实况。两源任一刷新后合并为一条 {@link WeatherInfo}
+ * 推送给监听器：实时优先取彩云（分钟级更新、有雷达降水实况，准确性
+ * 远高于聚合观测站数据；彩云失败时回退聚合），每日预报优先聚合
+ * （7 天，彩云仅 3 天；聚合失败时回退彩云），逐时恒取彩云（彩云未
+ * 就绪/失败时为空，UI 显示"暂无逐时预报"兜底）。</p>
  */
 public class HybridWeatherService {
 
@@ -89,12 +91,13 @@ public class HybridWeatherService {
     }
 
     /**
-     * 合并推送：实时/每日优先聚合（聚合失败时整体回退彩云），逐时恒取彩云；
-     * 两源均无数据时向 UI 报错进入兜底状态。
+     * 合并推送：实时优先取彩云（彩云失败时回退聚合），每日预报优先聚合
+     * （聚合失败时回退彩云），逐时恒取彩云；两源均无数据时向 UI 报错进入
+     * 兜底状态。
      */
     private void pushMerged() {
-        WeatherInfo primary = lastJuhe != null ? lastJuhe : lastCaiyun;
-        if (primary == null) {
+        WeatherInfo realtime = lastCaiyun != null ? lastCaiyun : lastJuhe;
+        if (realtime == null) {
             if (listener != null) {
                 listener.onWeatherError("聚合数据与彩云天气均不可用");
             }
@@ -102,12 +105,13 @@ public class HybridWeatherService {
         }
         List<HourlyForecast> hourly = lastCaiyun != null
                 ? lastCaiyun.getHourlyForecasts() : Collections.emptyList();
-        List<DailyForecast> daily = primary.getDailyForecasts().isEmpty() && lastCaiyun != null
-                ? lastCaiyun.getDailyForecasts() : primary.getDailyForecasts();
-        double feelsLike = primary.hasFeelsLike() ? primary.getFeelsLike()
-                : (lastCaiyun != null && lastCaiyun.hasFeelsLike() ? lastCaiyun.getFeelsLike() : Double.NaN);
-        double humidity = primary.hasHumidity() ? primary.getHumidity()
-                : (lastCaiyun != null && lastCaiyun.hasHumidity() ? lastCaiyun.getHumidity() : Double.NaN);
+        List<DailyForecast> daily = lastJuhe != null && !lastJuhe.getDailyForecasts().isEmpty()
+                ? lastJuhe.getDailyForecasts()
+                : (lastCaiyun != null ? lastCaiyun.getDailyForecasts() : Collections.emptyList());
+        double feelsLike = realtime.hasFeelsLike() ? realtime.getFeelsLike()
+                : (lastJuhe != null && lastJuhe.hasFeelsLike() ? lastJuhe.getFeelsLike() : Double.NaN);
+        double humidity = realtime.hasHumidity() ? realtime.getHumidity()
+                : (lastJuhe != null && lastJuhe.hasHumidity() ? lastJuhe.getHumidity() : Double.NaN);
         // 日出/日落、空气质量与紫外线仅彩云提供（聚合无此数据）
         String sunrise = lastCaiyun != null ? lastCaiyun.getSunrise() : null;
         String sunset = lastCaiyun != null ? lastCaiyun.getSunset() : null;
@@ -117,10 +121,10 @@ public class HybridWeatherService {
         double uvIndex = lastCaiyun != null ? lastCaiyun.getUvIndex() : Double.NaN;
         String uvDesc = lastCaiyun != null ? lastCaiyun.getUvDesc() : null;
         WeatherInfo merged = new WeatherInfo(
-                primary.getLocation(),
-                primary.getTemperature(),
-                primary.getCondition(),
-                primary.getWeatherCode(),
+                realtime.getLocation(),
+                realtime.getTemperature(),
+                realtime.getCondition(),
+                realtime.getWeatherCode(),
                 feelsLike, humidity, hourly, daily, sunrise, sunset, sunEvents,
                 airQualityIndex, airQualityDesc, uvIndex, uvDesc);
         if (listener != null) {

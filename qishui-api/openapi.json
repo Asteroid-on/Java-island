@@ -1,0 +1,1641 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "qishui-api",
+    "version": "1.0.0",
+    "description": "汽水音乐 API 服务"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:3300"
+    }
+  ],
+  "components": {
+    "schemas": {
+      "WebResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {},
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data",
+          "trace_id"
+        ]
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "健康检查",
+        "responses": {
+          "200": {
+            "description": "success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/list": {
+      "get": {
+        "summary": "列出已挂载 API",
+        "responses": {
+          "200": {
+            "description": "success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/discover": {
+      "get": {
+        "summary": "获取发现页块",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取发现页块",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/discover/mix": {
+      "get": {
+        "summary": "获取发现页混合流",
+        "parameters": [
+          {
+            "name": "block_type",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取发现页混合流",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/recommend/playlist": {
+      "get": {
+        "summary": "获取推荐歌单",
+        "parameters": [
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取推荐歌单（POST）",
+        "parameters": [
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/playlist/detail": {
+      "get": {
+        "summary": "获取歌单详情",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "playlist_type",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取歌单详情（POST）",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "playlist_type",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/playlist/related/media": {
+      "get": {
+        "summary": "获取歌单相关推荐媒体，通常需要登录态",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "playlist_type",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取歌单相关推荐媒体，通常需要登录态（POST）",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "playlist_type",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/radio/list": {
+      "get": {
+        "summary": "获取电台列表",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取电台列表（POST）",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/radio/tracks": {
+      "get": {
+        "summary": "获取电台歌曲 Feed",
+        "parameters": [
+          {
+            "name": "radio_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取电台歌曲 Feed（POST）",
+        "parameters": [
+          {
+            "name": "radio_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/feed/mode": {
+      "get": {
+        "summary": "获取 Feed 模式",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取 Feed 模式（POST）",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/feed/mode/guidance": {
+      "get": {
+        "summary": "获取 Feed 模式引导",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取 Feed 模式引导（POST）",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/daily/mix": {
+      "get": {
+        "summary": "DailyMix 主推荐流，裸调可能被上游拒绝",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "DailyMix 主推荐流，支持传入原始 body",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "summary": "PC 搜索歌曲",
+        "parameters": [
+          {
+            "name": "keywords",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "PC 搜索歌曲（POST）",
+        "parameters": [
+          {
+            "name": "keywords",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/track/detail": {
+      "get": {
+        "summary": "PC 曲目详情",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "PC 曲目详情（POST）",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/media/player": {
+      "get": {
+        "summary": "App 播放信息摘要，播放敏感字段默认脱敏",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "media_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "media_type",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "track"
+            }
+          },
+          {
+            "name": "queue_type",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "enable_dash",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "App 播放信息摘要，支持传入原始 body，响应敏感字段默认脱敏",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/comment": {
+      "get": {
+        "summary": "获取歌曲评论列表",
+        "description": "返回统一响应 { code, message, data, trace_id }；data.comments 为规范化评论列表。group_id、track_id 或 id 至少传一个。",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "评论 group_id，通常为歌曲 track_id"
+          },
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "歌曲 ID；未传 group_id 时使用"
+          },
+          {
+            "name": "id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "兼容 ID；未传 group_id 和 track_id 时使用"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "group_type",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "track"
+            }
+          },
+          {
+            "name": "image_strategy",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "tplv-luna-shrink:200:200"
+            }
+          },
+          {
+            "name": "sort_type",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "hot"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success，data 包含 comments、total、cursor、has_more、upstream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "获取歌曲评论列表（POST）",
+        "description": "返回统一响应 { code, message, data, trace_id }；group_id、track_id 或 id 至少传一个。",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "group_id": {
+                    "type": "string"
+                  },
+                  "track_id": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "兼容 ID；未传 group_id 和 track_id 时使用"
+                  },
+                  "cursor": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "default": 20,
+                    "maximum": 50
+                  },
+                  "group_type": {
+                    "type": "string",
+                    "default": "track"
+                  },
+                  "image_strategy": {
+                    "type": "string",
+                    "default": "tplv-luna-shrink:200:200"
+                  },
+                  "sort_type": {
+                    "type": "string",
+                    "default": "hot"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success，data 包含 comments、total、cursor、has_more、upstream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/song/detail": {
+      "get": {
+        "summary": "解析歌曲详情",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "解析歌曲详情（POST）",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/lyric": {
+      "get": {
+        "summary": "解析歌词",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "解析歌词（POST）",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/h5/seo/track": {
+      "get": {
+        "summary": "H5 SEO 曲目接口",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "H5 SEO 曲目接口（POST）",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/audio/info": {
+      "get": {
+        "summary": "解析音频信息与可见解密字段",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_raw",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "解析音频信息与可见解密字段（POST）",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_raw",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/download/url": {
+      "get": {
+        "summary": "解析曲目音频下载地址",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "解析曲目音频下载地址（POST）",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/download/file": {
+      "post": {
+        "summary": "受控下载音频文件并返回 base64",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "audio_url": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "track_id": {
+                    "type": "string"
+                  },
+                  "max_bytes": {
+                    "type": "integer",
+                    "default": 52428800
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/decrypt/spade": {
+      "post": {
+        "summary": "解出 spade_a 对应的 AES hex key",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "spade_a": {
+                    "type": "string"
+                  },
+                  "hex_key": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/audio/decrypt": {
+      "post": {
+        "summary": "本地解密加密音频，返回音频 base64 或元数据",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "spade_a": {
+                    "type": "string"
+                  },
+                  "hex_key": {
+                    "type": "string"
+                  },
+                  "audio_base64": {
+                    "type": "string"
+                  },
+                  "audio_url": {
+                    "type": "string"
+                  },
+                  "track_id": {
+                    "type": "string"
+                  },
+                  "return_base64": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "max_bytes": {
+                    "type": "integer",
+                    "default": 52428800
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/search/playlist": {
+      "get": {
+        "summary": "搜索歌单",
+        "parameters": [
+          {
+            "name": "keywords",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "搜索歌单",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "keywords": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": "integer",
+                    "default": 0
+                  },
+                  "count": {
+                    "type": "integer",
+                    "default": 10
+                  }
+                },
+                "required": [
+                  "keywords"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/search/mixed": {
+      "get": {
+        "summary": "混合搜索（歌曲/歌单/视频）",
+        "parameters": [
+          {
+            "name": "keywords",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "混合搜索（歌曲/歌单/视频）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "keywords": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": "integer",
+                    "default": 0
+                  },
+                  "count": {
+                    "type": "integer",
+                    "default": 10
+                  }
+                },
+                "required": [
+                  "keywords"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/playlist/feed/media": {
+      "get": {
+        "summary": "获取歌单媒体 Feed",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取歌单媒体 Feed",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "playlist_id": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "default": 10
+                  }
+                },
+                "required": [
+                  "playlist_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/feed/listen/video": {
+      "get": {
+        "summary": "获取听歌视频 Feed",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "获取听歌视频 Feed",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "cursor": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "default": 10
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/video/detail": {
+      "post": {
+        "summary": "获取视频详情（POST bodyOnly）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "video_id": {
+                    "type": "string"
+                  },
+                  "sessionid": {
+                    "type": "string",
+                    "description": "可选，登录态可通过此字段传入"
+                  },
+                  "include_raw": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "video_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/auth/qrcode": {
+      "get": {
+        "summary": "获取登录二维码",
+        "description": "返回扁平化 token、qrcode、qrcode_index_url、expire_time，并保留上游 data；当前上游要求使用已登录的抖音 APP 扫码。",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/auth/qrcode/status": {
+      "post": {
+        "summary": "轮询二维码登录状态",
+        "description": "请求体传入 token；返回扁平化 status，扫码确认后 auth.sessionid 为本次登录态。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "post": {
+        "summary": "获取当前登录账号信息",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionid": {
+                    "type": "string"
+                  },
+                  "include_raw": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/me/playlists": {
+      "post": {
+        "summary": "获取我的歌单列表",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionid": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "default": 10
+                  },
+                  "include_raw": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/me/collection/mixed": {
+      "post": {
+        "summary": "获取我的收藏混合流",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionid": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "default": 10
+                  },
+                  "include_raw": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/share/resolve": {
+      "get": {
+        "summary": "解析分享链接或显式资源 ID",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "video_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "playlist_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      },
+      "post": {
+        "summary": "解析分享链接或显式资源 ID",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "track_id": {
+                    "type": "string"
+                  },
+                  "video_id": {
+                    "type": "string"
+                  },
+                  "playlist_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    },
+    "/api/capabilities": {
+      "get": {
+        "summary": "获取 API 能力列表",
+        "responses": {
+          "200": {
+            "description": "success"
+          }
+        }
+      }
+    }
+  }
+}

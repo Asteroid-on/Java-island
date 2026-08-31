@@ -144,18 +144,25 @@ class MusicPanel {
                 Graphics2D g2d = (Graphics2D) g.create();
                 try {
                     g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-                    g2d.setFont(IslandUiStyle.MUSIC_LYRICS_FONT);
-                    FontMetrics fm = g2d.getFontMetrics();
                     List<LyricItem> lines = session.getLrcLines();
                     if (lines.isEmpty() || session.getCurrentLyricIndex() < 0) {
+                        g2d.setFont(IslandUiStyle.MUSIC_LYRICS_FONT);
+                        FontMetrics fm = g2d.getFontMetrics();
                         g2d.setColor(new Color(255, 255, 255, 100));
-                        String ph = session.currentInfo() != null && session.currentInfo().hasSession()
-                                ? "歌词加载中..." : " ";
+                        String ph;
+                        if (session.currentInfo() == null || !session.currentInfo().hasSession()) ph = " ";
+                        else if (session.isLyricsFetchFailed()) ph = "暂无歌词";
+                        else if (session.isFetchingLyrics()) ph = "歌词加载中...";
+                        else ph = " ";
                         g2d.drawString(ph, 4, getHeight() / 2 + fm.getAscent() / 2 - 1);
                         return;
                     }
+                    String content = lines.get(session.getCurrentLyricIndex()).content;
+                    // 韩/日等非中文字形回退：主字体无法完整显示时自动换候选字体，避免方框
+                    g2d.setFont(IslandUiStyle.resolveDisplayFont(IslandUiStyle.MUSIC_LYRICS_FONT, content));
+                    FontMetrics fm = g2d.getFontMetrics();
                     g2d.setColor(Color.WHITE);
-                    g2d.drawString(lines.get(session.getCurrentLyricIndex()).content,
+                    g2d.drawString(content,
                             4, getHeight() / 2 + fm.getAscent() / 2 - 1);
                 } finally {
                     g2d.dispose();
@@ -223,11 +230,18 @@ class MusicPanel {
     }
 
     void setTitleText(String text) {
-        if (titleLabel != null) titleLabel.setText(text);
+        if (titleLabel != null) {
+            titleLabel.setText(text);
+            // 韩/日等非中文字形回退，避免方框（歌名原文未被截断时按全文判断）
+            titleLabel.setFont(IslandUiStyle.resolveDisplayFont(IslandUiStyle.MUSIC_TITLE_FONT, text));
+        }
     }
 
     void setArtistText(String text) {
-        if (artistLabel != null) artistLabel.setText(text);
+        if (artistLabel != null) {
+            artistLabel.setText(text);
+            artistLabel.setFont(IslandUiStyle.resolveDisplayFont(IslandUiStyle.MUSIC_ARTIST_FONT, text));
+        }
     }
 
     void setLyricsText(String text) {

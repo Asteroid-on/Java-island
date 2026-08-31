@@ -43,6 +43,10 @@ public final class WindowsLocationProvider {
     private static volatile LocationResult cachedLocation;
     private static volatile long cachedLocationAt;
 
+    /** 上次成功定位的持久化备份：定位瞬时失败时复用，避免回退默认城市（北京）导致天气张冠李戴 */
+    private static final java.util.prefs.Preferences LOC_PREFS =
+            java.util.prefs.Preferences.userNodeForPackage(WindowsLocationProvider.class);
+
     // ═══════════════════════════════════════════
     // 嵌入式 C# 源码（写临时文件 → csc 编译）
     // ═══════════════════════════════════════════
@@ -141,7 +145,7 @@ public final class WindowsLocationProvider {
         if (cached != null && now - cachedLocationAt < LOCATION_CACHE_TTL_MS) {
             return cached;
         }
-        if (!ensureExe()) return null;
+        if (!ensureExe()) return lastKnownLocation("EXE 编译失败");
         try {
             Process p = new ProcessBuilder(EXE_PATH.toAbsolutePath().toString()).start();
             // 关闭子进程 stdin，避免管道句柄依赖 GC 回收（句柄泄漏治理）
@@ -156,7 +160,7 @@ public final class WindowsLocationProvider {
             if (!p.waitFor(LOCATION_TIMEOUT_SEC + 5, TimeUnit.SECONDS)) {
                 p.destroyForcibly();
                 System.err.println("[Windows定位] EXE 超时，已强制终止");
-                return null;
+                return lastKnownLocation("EXE 超时");
             }
             String errStr = err.toString().trim();
             if (p.exitValue() != 0) {
@@ -165,7 +169,7 @@ public final class WindowsLocationProvider {
                 } else {
                     System.err.println("[Windows定位] 失败 (exit=" + p.exitValue() + "): " + errStr);
                 }
-                return null;
+                return lastKnownLocation("EXE 退出码 " + p.exitValue());
             }
             String result = out.toString().trim();
             String[] parts = result.split(",");
@@ -177,14 +181,39 @@ public final class WindowsLocationProvider {
                 LocationResult location = new LocationResult(lat, lon, acc);
                 cachedLocation = location;
                 cachedLocationAt = now;
+                persistLocation(lat, lon);
                 return location;
             }
             System.err.println("[Windows定位] 无法解析输出: " + result);
-            return null;
+            return lastKnownLocation("输出无法解析");
         } catch (Exception e) {
             System.err.println("[Windows定位] 异常: " + e.getMessage());
-            return null;
+            return lastKnownLocation("异常: " + e.getMessage());
         }
+    }
+
+    /** 定位成功后持久化坐标，供后续瞬时失败时兜底 */
+    private static void persistLocation(double lat, double lon) {
+        try {
+            LOC_PREFS.putDouble("lastLat", lat);
+            LOC_PREFS.putDouble("lastLon", lon);
+        } catch (Exception ignored) { }
+    }
+
+    /** 定位失败时尝试复用上次成功坐标；无历史则返回 null（由调用方走默认城市兜底） */
+    private static LocationResult lastKnownLocation(String reason) {
+        try {
+            double lat = LOC_PREFS.getDouble("lastLat", Double.NaN);
+            double lon = LOC_PREFS.getDouble("lastLon", Double.NaN);
+            if (!Double.isNaN(lat) && !Double.isNaN(lon)) {
+                System.err.printf("[Windows定位] %s，复用上次成功坐标: %.6f, %.6f%n", reason, lat, lon);
+                LocationResult fallback = new LocationResult(lat, lon, 9999);
+                cachedLocation = fallback;
+                cachedLocationAt = System.currentTimeMillis();
+                return fallback;
+            }
+        } catch (Exception ignored) { }
+        return null;
     }
 
     // ═══════════════════════════════════════════

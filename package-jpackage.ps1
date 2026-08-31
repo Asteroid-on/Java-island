@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Java-Island jpackage packaging script.
   Usage : powershell -ExecutionPolicy Bypass -File package-jpackage.ps1 [-NoZip] [-NoNode] [-NodeVersion v22.14.0]
@@ -21,9 +21,9 @@ $ErrorActionPreference = 'Stop'
 
 $Root       = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppName    = 'Java-island'
-$AppVersion = '1.1.1'   # Windows exe file version (x.y.z form); project release is 1.1.1
+$AppVersion = '1.2.2'   # Windows exe file version (x.y.z form); project release is 1.2.2
 $MainClass  = 'com.island.IslandApplication'
-$MainJar    = 'Java-island-1.1.1.jar'
+$MainJar    = 'Java-island-1.2.2.jar'
 $Staging    = Join-Path $Root 'target\jpackage-input'
 $DistDir    = Join-Path $Root 'dist'
 $ImageRoot  = Join-Path $DistDir $AppName
@@ -168,8 +168,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "jpackage failed, exit $LASTEXITCODE" }
 
     # ── 4. copy daemons next to exe ──
-    Write-Host '[4/6] copying daemons (MediaInfoDaemon / ncm-server / QQMusicapi) ...'
-    foreach ($f in @('MediaInfoDaemon.exe', 'MediaInfoDaemon.pdb', 'ncm-server.exe')) {
+    Write-Host '[4/6] copying daemons (MediaInfoDaemon / WechatNotifyDaemon / ncm-server / QQMusicapi / qishui-api) ...'
+    foreach ($f in @('MediaInfoDaemon.exe', 'MediaInfoDaemon.pdb', 'WechatNotifyDaemon.exe', 'ncm-server.exe')) {
         $src = Join-Path $Root $f
         if (Test-Path $src) {
             Copy-Item $src $ImageRoot -Force
@@ -184,6 +184,13 @@ try {
         Write-Host '  + QQMusicapi\'
     } else {
         Write-Warning 'skip QQMusicapi (not found, QQ music features unavailable)'
+    }
+    $qsDir = Join-Path $Root 'qishui-api'
+    if (Test-Path $qsDir) {
+        Copy-Item $qsDir (Join-Path $ImageRoot 'qishui-api') -Recurse -Force
+        Write-Host '  + qishui-api\'
+    } else {
+        Write-Warning 'skip qishui-api (not found, 汽水音乐歌词/封面不可用)'
     }
 
     # ── 5. bundle Node.js ──

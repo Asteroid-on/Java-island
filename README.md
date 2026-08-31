@@ -6,11 +6,12 @@
 
 - 🎯 **鼠标感应**: 鼠标移到屏幕顶部自动显示，移开自动隐藏
 - 🎨 **流畅动画**: 高精度定时器驱动（设计 100FPS，实测 ≈87FPS）
-- 🎵 **音乐歌词上岛**: 自动检测播放中的音乐并弹出音乐面板，网易云/QQ音乐双来源歌词 + LRCLIB 兜底
+- 🎵 **音乐歌词上岛**: 自动检测播放中的音乐并弹出音乐面板，网易云/QQ音乐/汽水音乐三来源歌词 + LRCLIB 兜底，汽水支持 YRC 逐字歌词转 LRC 与本地进度外推
+- 💬 **微信/QQ 消息上岛**: 监听系统通知中心的微信/QQ Toast 并弹窗上岛（事件驱动秒级到达，秒级抑制与连续消息去重防刷屏）
 - 📷 **设备状态检测**: 摄像头/麦克风使用状态、蓝牙/WiFi/电池状态实时上岛
 - 🌤️ **天气详情**: 定位 + 双源天气（聚合数据 + 彩云），24 小时逐时时间轴、日出日落标注、空气质量/紫外线、区级地名、手动刷新
 - 🔒 **单实例保护**: 端口 9127 单实例锁，重复启动自动退出
-- 🔧 **守护进程**: MediaInfoDaemon / ncm-server / qqmusic-api 自动拉起与回收
+- 🔧 **守护进程**: MediaInfoDaemon / WechatNotifyDaemon / QqNotifyDaemon / ncm-server / qqmusic-api / qishui-api 自动拉起与回收
 - 🌓 **系统托盘**: 后台运行，托盘菜单控制（设置/退出）
 - 🔄 **自动更新**: 后台检测 GitHub Releases 新版本并托盘提醒，设置内一键检查/下载/解压更新
 
@@ -29,7 +30,7 @@
 mvn clean package
 ```
 
-编译成功后，会在 `target` 目录下生成 `Java-island-1.1.1.jar` 文件。
+编译成功后，会在 `target` 目录下生成 `Java-island-1.2.2.jar` 文件。
 
 ### 第二步：启动云隙泡
 
@@ -41,7 +42,7 @@ powershell -ExecutionPolicy Bypass -File launch.ps1            # 静默启动（
 powershell -ExecutionPolicy Bypass -File launch.ps1 -Console   # 带控制台窗口
 ```
 
-应用启动时会自动拉起并管理三个守护进程（MediaInfoDaemon / ncm-server / qqmusic-api），退出时自动回收。
+应用启动时会自动拉起并管理六个守护进程（MediaInfoDaemon / WechatNotifyDaemon / QqNotifyDaemon / ncm-server / qqmusic-api / qishui-api），退出时自动回收。
 
 ### 第三步：使用云隙泡
 
@@ -55,16 +56,20 @@ powershell -ExecutionPolicy Bypass -File launch.ps1 -Console   # 带控制台窗
 Java-island/
 ├── src/main/java/com/island/   # 源代码
 │   ├── IslandApplication.java  # 主入口（单实例锁/守护进程管理/退出回收）
-│   ├── island/ui/              # 主岛/扩展岛 UI、动画、音乐面板
-│   ├── music/                  # 歌词服务（调度/缓存/网易云/QQ音乐 Provider）
+│   ├── island/ui/              # 主岛/扩展岛 UI、动画、音乐面板、微信弹窗
+│   ├── music/                  # 歌词服务（调度/缓存/网易云/QQ音乐/汽水 Provider）
+│   ├── wechat/ qq/             # 微信/QQ 消息通知监控与桥接
 │   ├── battery/ bluetooth/     # 电池/蓝牙监控（JNA）
 │   ├── wifi/ privacy/ weather/ # WiFi/隐私/天气监控
 │   ├── tray/ monitor/ config/  # 托盘/监控调度/配置
 │   ├── update/                 # 自动更新（GitHub Releases 检测/下载/解压）
 │   └── util/                   # 日志、窗口管理等工具
 ├── src/main/resources/         # 字体/图标/native(MediaInfoDaemon 源码)/config.properties
-├── QQMusicapi/                 # QQ音乐 API 子项目（Node.js + Koa，端口 3300）
+├── QQMusicapi/                 # QQ音乐 API 子项目（Node.js + Koa，端口 3301）
+├── qishui-api/                 # 汽水音乐 API 子项目（Node.js，端口 3300，搜索/歌词/封面）
 ├── MediaInfoDaemon.exe         # SMTC 媒体信息守护进程（.NET 8）
+├── WechatNotifyDaemon.exe      # 微信通知守护进程（.NET，通知中心 Toast 监听）
+├── QqNotifyDaemon.exe          # QQ 通知守护进程（.NET，通知中心 Toast 监听）
 ├── ncm-server.exe              # 网易云 API 代理（端口 3000）
 ├── target/                     # 编译输出目录
 ├── 使用说明.md                 # 完整中文使用指南（含音乐功能与歌词来源）
@@ -83,7 +88,7 @@ Java-island/
 - **正式版**：双击打包的 `Java-island.exe`
 - **开发版**：`powershell -ExecutionPolicy Bypass -File launch.ps1`（进程名同为 Java-island，stdout → target\app-out.log）
 
-应用启动时自动拉起 MediaInfoDaemon / ncm-server / qqmusic-api 三个守护进程（端口/进程探测防重复），托盘退出时自动回收。
+应用启动时自动拉起 MediaInfoDaemon / WechatNotifyDaemon / QqNotifyDaemon / ncm-server / qqmusic-api / qishui-api 六个守护进程（端口/进程探测防重复），托盘退出时自动回收。
 
 ### 控制方式
 
@@ -132,15 +137,16 @@ public static final int MUSIC_STOP_AUTO_HIDE_MS = 2 * 60 * 1000; // 音乐停止
 - **JNA 5.14** - Win32 API 调用（注册表/蓝牙/电池/WLAN API/高精度定时器）
 - **FlatLaf 3.6.1** - 全局深色主题
 - **JMTC 0.0.3** - Windows SMTC 媒体控制桥接
-- **MediaInfoDaemon** - C#（.NET 8）SMTC 媒体信息守护进程
-- **QQMusicapi** - Node.js ≥18（Koa）QQ音乐 API 子项目，源自 [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) 的 JavaScript 移植
+- **MediaInfoDaemon** - C#（.NET 8）SMTC 媒体信息守护进程；WechatNotifyDaemon / QqNotifyDaemon - C#（.NET）微信/QQ 通知守护进程（WinRT UserNotificationListener 读取通知中心 Toast，原子写 JSON 桥接到 Java）
+- **QQMusicapi** - Node.js ≥18（Koa）QQ音乐 API 子项目（端口 3301），源自 [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) 的 JavaScript 移植
+- **qishui-api** - Node.js ≥18 汽水音乐 API 子项目（端口 3300），源自 [guowenye/qishui-api](https://github.com/guowenye/qishui-api)，内置免签名 web 搜索回退与 YRC 歌词支持
 - **ncm-server** - 网易云 API 代理，源自 [Binaryify/NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi) 打包
 - **天气数据源** - 聚合数据（Juhe）+ 彩云天气（CaiYun）双源并行合并，高德地图 Web 服务逆地理编码（区级地名）
 - **自动更新** - `java.net.http` HttpClient + GitHub Releases API（检测最新版本/下载/解压便携包，可配置 `update.repo`）
 - **Maven** - 构建工具
 
-> 音乐歌词的完整调度链路（ncm-server / QQMusicapi / LRCLIB）见 [使用说明.md](./使用说明.md)「音乐功能与歌词来源」章节。
-> 两个歌词来源的原项目：网易云 [NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi)、QQ音乐 [QQMusicApi](https://github.com/L-1124/QQMusicApi)。
+> 音乐歌词的完整调度链路（ncm-server / QQMusicapi / qishui-api / LRCLIB）见 [使用说明.md](./使用说明.md)「音乐功能与歌词来源」章节。
+> 歌词来源的原项目：网易云 [NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi)、QQ音乐 [QQMusicApi](https://github.com/L-1124/QQMusicApi)、汽水音乐 [qishui-api](https://github.com/guowenye/qishui-api)。
 
 ## 💡 常见问题
 
@@ -165,6 +171,10 @@ A:
 A:
 需在网易云音乐客户端设置中打开 SMTC 接口（系统媒体控制），详见 [使用说明.md](./使用说明.md)「使用提示（网易云音乐）」。注意：网易云 SMTC 不报告播放进度，歌词不会跟随进度条移动。
 
+### Q: 汽水音乐需要登录或配置吗？
+A:
+不需要。qishui-api 内置免签名 web 搜索回退与 H5 歌词源，播放即自动匹配歌词/封面。汽水音乐 SMTC 播放中不上报连续进度，应用内置本地位置估计器（挂钟外推）保证歌词逐句推进，拖动进度条自动校准。若系统媒体服务异常挂起（歌词/封面完全无检测），重启系统即可恢复。
+
 ### Q: 动画卡顿怎么办？
 A: 
 1. 检查系统资源占用
@@ -172,6 +182,15 @@ A:
 3. 调整动画帧率（修改Timer间隔）
 
 ## 📝 更新日志
+
+### v1.2.2
+- ✅ 微信/QQ 消息上岛：WechatNotifyDaemon / QqNotifyDaemon（.NET）经 WinRT UserNotificationListener 读取通知中心内的微信/QQ Toast，解析发送者/内容（QQ 含群名）后原子写入 JSON 桥接到岛；Java 侧 WatchService 事件驱动 + 轮询兜底双通道（秒级到达），弹窗秒级抑制与 5 秒连续消息去重防刷屏，微信文案宋体高性能绘制
+- ✅ 汽水音乐全面接入：SMTC 白名单（含实测中文 AUMID「汽水音乐」）与播放器进程检测，新增 QishuiLyricsProvider 歌词/封面源，调度链为“本平台源 → LRCLIB 兜底”
+- ✅ qishui-api 内置部署（默认端口 3300，QQMusicapi 让位至 3301）：搜索被上游拒绝时自动回退免签名 web 搜索，歌词 YRC 逐字格式自动转标准 LRC，封面 CDN 模板 URL 自动拼接修复
+- ✅ 汽水歌词进度同步：其 SMTC 播放中位置静止且状态高频抖动，新增 Java 层本地位置估计器（同步锚点 + 挂钟外推，暂停冻结、恢复续推、拖动 seek 按上游自身跳变自动校准）；网易云插值与 QQ音乐原生进度不受影响
+- ✅ 健壮性：MediaInfoDaemon 对 SMTC RequestAsync 增加 2.5s 超时兜底（系统媒体服务挂起时不卷死，按无会话处理）；系统定位失败时复用上次成功坐标（不再盲目回退默认城市）
+- ✅ UI：歌名/艺术家/歌词多语种字形自动回退（韩/日等不再显示方框）；歌词获取失败显示“暂无歌词”占位替代永久“加载中”
+- ✅ 打包：package-jpackage 同步分发 qishui-api 目录
 
 ### v1.1.1
 - ✅ 自动更新：启动后台检测 GitHub Releases 最新版本（延迟 30s，不阻塞启动），发现新版本托盘气泡提醒（同版本仅提醒一次）
