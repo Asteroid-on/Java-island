@@ -11,6 +11,7 @@ import com.island.update.UpdateChecker;
 import com.island.util.AppLogger;
 import com.island.util.DpiUtil;
 import com.island.util.ScreenUtil;
+import com.island.util.WindowsStartupManager;
 import com.island.util.WindowsTheme;
 import com.island.qq.QqNotificationMonitor;
 import com.island.wechat.WechatNotificationMonitor;
@@ -118,6 +119,9 @@ public class IslandApplication {
 
         // ── 3. 启动守护进程 ──
         new Thread(IslandApplication::launchDaemons, "DaemonLauncher").start();
+
+        // ── 3.1 开机自启：首次运行默认开启，此后尊重用户显式设置 ──
+        new Thread(IslandApplication::ensureAutoStart, "AutoStartInit").start();
 
         // ── 4. UI 初始化 ──
         SwingUtilities.invokeLater(() -> {
@@ -357,6 +361,41 @@ public class IslandApplication {
     // ═══════════════════════════════════════════
     //  守护进程管理
     // ═══════════════════════════════════════════
+
+    /**
+     * 开机自启默认策略（异步执行，不阻塞启动）：
+     * <ul>
+     *   <li>首次运行（设置未落盘）：默认开启并注册开机自启项</li>
+     *   <li>用户已开启但启动项缺失/失效（被手动删除等）：静默修复注册</li>
+     *   <li>用户显式关闭过：尊重设置，不自动注册</li>
+     * </ul>
+     * 注册失败时开关状态按实际结果落盘，与设置页“以实际状态为准”的同步逻辑保持一致。
+     */
+    private static void ensureAutoStart() {
+        try {
+            if (!AppConstants.isAutoStartConfigured()) {
+                // 首次运行：默认勾选开机自启
+                try {
+                    WindowsStartupManager.register();
+                    AppConstants.setAutoStartEnabled(true);
+                    AppLogger.info("IslandApplication", "首次运行，已默认开启开机自启");
+                } catch (Exception e) {
+                    AppConstants.setAutoStartEnabled(false);
+                    AppLogger.warn("IslandApplication", "默认开机自启注册失败: " + e.getMessage());
+                }
+            } else if (AppConstants.isAutoStartEnabled() && !WindowsStartupManager.isRegistered()) {
+                // 已开启但启动项缺失/失效 → 修复注册（如更新后快捷方式目标失效）
+                try {
+                    WindowsStartupManager.register();
+                    AppLogger.info("IslandApplication", "开机自启项缺失，已重新注册");
+                } catch (Exception e) {
+                    AppLogger.warn("IslandApplication", "开机自启项修复失败: " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            AppLogger.warn("IslandApplication", "开机自启检查异常", e);
+        }
+    }
 
     /**
      * 启动所有依赖守护进程。

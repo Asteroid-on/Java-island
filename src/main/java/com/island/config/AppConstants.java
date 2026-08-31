@@ -182,6 +182,19 @@ public final class AppConstants {
         }
     }
 
+    /**
+     * 开机自启是否曾被显式配置过（首启默认开启的判据）。
+     * Preferences 读取异常时按“已配置”处理，避免误自动注册启动项。
+     */
+    public static boolean isAutoStartConfigured() {
+        try {
+            return Preferences.userNodeForPackage(AppConstants.class)
+                    .get(PREF_KEY_AUTO_START, null) != null;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
     /** 设置开机自启开关状态并持久化到 Preferences。 */
     public static void setAutoStartEnabled(boolean enabled) {
         try {
