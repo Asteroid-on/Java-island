@@ -89,6 +89,9 @@ public class ExpandAnimPerfTest {
         System.out.printf("[PERF] JVM uiScale=%.3f GDI物理/逻辑比=%.3f%n", uiScale, gdiScale());
         System.out.printf("[PERF] 展开动画: 设计帧间隔=%dms(100%%) 当前生效=%dms 时长=%dms%n",
                 designFrameMs, effectiveFrameMs, IslandUiStyle.EXPAND_ANIM_DURATION_MS);
+        System.out.printf("[PERF] 切卡动画: 设计帧间隔=%dms(100%%) 当前生效=%dms 时长=%dms%n",
+                IslandUiStyle.SLIDE_ANIM_FRAME_MS, IslandUiStyle.slideAnimFrameMs(),
+                IslandUiStyle.SLIDE_ANIM_DURATION_MS);
 
         // 反射获取控制器与 show/hide 方法
         Field ctrlField = IslandWindow.class.getDeclaredField("expandedController");
@@ -115,6 +118,28 @@ public class ExpandAnimPerfTest {
         FrameStats expand = expandSampler.stats();
         expand.print("展开", effectiveFrameMs);
         printPaintStats("展开", expandInvokeNs, expand.endNs);
+
+        // ── 卡片滑动切换动画 ──
+        // 切卡不改窗口 bounds（只改子组件 x），故改为采样 gestureSlideProgress 变化时刻
+        System.out.println("\n--- 切卡滑动动画 ---");
+        final Method slideMethod = ExpandedIslandController.class
+                .getDeclaredMethod("showMusicPanelInExpanded");
+        slideMethod.setAccessible(true);
+        Field progressField = ExpandedIslandController.class.getDeclaredField("gestureSlideProgress");
+        progressField.setAccessible(true);
+        long slideInvokeNs = System.nanoTime();
+        SlideSampler slide = new SlideSampler(progressField, controller);
+        slide.start();
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                slideMethod.invoke(controller);
+            } catch (Exception e) {
+                throw new RuntimeException("showMusicPanelInExpanded() 调用失败", e);
+            }
+        });
+        slide.join();
+        slide.stats().print("切卡", IslandUiStyle.slideAnimFrameMs());
+        printPaintStats("切卡", slideInvokeNs, slide.endNs);
 
         // ── 收起 ──
         System.out.println("\n--- 收起动画 ---");
@@ -247,6 +272,55 @@ public class ExpandAnimPerfTest {
             }
             startNs = frames.get(0);
             endNs = System.nanoTime();
+        }
+
+        FrameStats stats() {
+            return new FrameStats(frames, startNs, endNs);
+        }
+    }
+
+    /** 切卡动画采样：1ms 轮询 gestureSlideProgress，变化即计为一帧，稳定 250ms 判定结束。 */
+    static class SlideSampler extends Thread {
+        private final Field progressField;
+        private final ExpandedIslandController controller;
+        final List<Long> frames = new ArrayList<>();
+        volatile long startNs;
+        volatile long endNs;
+
+        SlideSampler(Field progressField, ExpandedIslandController controller) {
+            super("SlideAnimSampler");
+            this.progressField = progressField;
+            this.controller = controller;
+            setDaemon(true);
+        }
+
+        @Override
+        public void run() {
+            float last = -1f;
+            long lastChange = 0;
+            long deadline = System.nanoTime() + 5_000_000_000L;
+            while (System.nanoTime() < deadline) {
+                float cur;
+                try {
+                    cur = progressField.getFloat(controller);
+                } catch (IllegalAccessException e) {
+                    System.out.println("[DIAG] gestureSlideProgress 读取失败: " + e.getMessage());
+                    return;
+                }
+                long now = System.nanoTime();
+                if (cur != last) {
+                    frames.add(now);
+                    last = cur;
+                    lastChange = now;
+                } else if (!frames.isEmpty() && now - lastChange > 250_000_000L && frames.size() > 3) {
+                    break;
+                }
+                try { Thread.sleep(1); } catch (InterruptedException ignored) { }
+            }
+            if (!frames.isEmpty()) {
+                startNs = frames.get(0);
+                endNs = System.nanoTime();
+            }
         }
 
         FrameStats stats() {

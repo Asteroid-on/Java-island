@@ -10,10 +10,49 @@ class Program
 {
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll", EntryPoint = "GetWindowTextLengthW")] static extern int GetWindowTextLength(IntPtr hWnd);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+
+    const int GWL_EXSTYLE = -20;
+    const int WS_EX_TOOLWINDOW = 0x00000080;
+    /** 点击穿透浮窗（如桌面歌词）：不是可交互主窗口，不能计作“播放器窗口可见” */
+    const int WS_EX_TRANSPARENT = 0x00000020;
+    const int DWMWA_CLOAKED = 14;
+    /** 认定“主窗口”的最小尺寸（小于此值的是浮窗/提示窗，不代表播放器主窗口可见） */
+    const int MAIN_WINDOW_MIN_PX = 100;
+    /** 窗口状态探测结果缓存时长：Flush 会随 SMTC 事件高频触发，避免每次全量枚举窗口 */
+    const long WindowProbeTtlMs = 250;
+    /** “不可见”需持续观察这么久而不是一次快照，防止播放器启动中窗口尚未创建、
+        或窗口瞬时重建等瞬态被当作“已最小化”而误弹音乐岛；变为“可见”则立即生效 */
+    const long HiddenConfirmMs = 800;
 
     static readonly string PosFile = Path.Combine(Path.GetTempPath(), "media_info.json");
     static readonly string ThumbFile = Path.Combine(Path.GetTempPath(), "media_thumb.bin");
     static readonly string[] Players = ["cloudmusic", "QQMusic", "SodaMusic"];
+
+    /// <summary>
+    /// SMTC SourceAppUserModelId 关键字 → 播放器进程名映射。
+    /// 窗口状态必须按“当前活跃会话对应的那个播放器”判定，
+    /// 否则多播放器并存时会把别的播放器窗口状态算到正在播放的播放器头上。
+    /// </summary>
+    static readonly (string Key, string Proc)[] SourceProcessMap = [
+        ("cloudmusic", "cloudmusic"),   // 网易云音乐（桌面版）
+        ("netease", "cloudmusic"),      // 网易云（UWP/包名系）
+        ("qqmusic", "QQMusic"),         // QQ音乐
+        ("tencent", "QQMusic"),         // 腾讯系兜底
+        ("sodamusic", "SodaMusic"),     // 汽水音乐
+        ("qishui", "SodaMusic"),        // 汽水音乐（qishui.com 系）
+        ("luna", "SodaMusic"),          // 汽水音乐（com.luna.music 包名）
+        ("汽水", "SodaMusic"),          // 汽水音乐（实测 AUMID 为中文名）
+    ];
 
     /// <summary>单实例互斥体：防止应用多次启动导致多个 daemon 并存（内存泄漏）</summary>
     static readonly bool SingletonCreated;
@@ -171,6 +210,134 @@ class Program
             }
         }
         return true;
+    }
+
+    /// <summary>会话对应的播放器进程名（按 AUMID 关键字定位；无法定位时退回全部白名单播放器）</summary>
+    static string[] PlayerProcsForSource(string? src)
+    {
+        if (!string.IsNullOrEmpty(src))
+        {
+            var low = src.ToLowerInvariant();
+            foreach (var (key, proc) in SourceProcessMap)
+                if (low.Contains(key)) return new[] { proc };
+        }
+        return Players;
+    }
+
+    // 窗口状态探测缓存（TtlMs 内复用，避免高频 Flush 重复枚举进程/窗口）
+    static bool _winProbeValid;
+    static string? _winProbeSrc;
+    static long _winProbeAtMs;
+    static bool _winProbeHidden;
+    static bool _winProbeKnown;
+    static long _hiddenSinceMs;
+    static string _lastWinDesc = "";
+
+    /// <summary>
+    /// 当前活跃会话对应播放器的主窗口是否处于最小化/不可见状态。
+    /// known=false 表示窗口状态无法确定（解析不到对应播放器进程），
+    /// 此时按“不满足弹出条件”返回 hidden=false，保证宁可不弹也不误弹。
+    /// </summary>
+    static bool IsPlayerWindowHidden(string? src, out bool known)
+    {
+        long now = Environment.TickCount64;
+        bool rawHidden;
+        if (_winProbeValid && string.Equals(_winProbeSrc, src, StringComparison.OrdinalIgnoreCase)
+            && now - _winProbeAtMs < WindowProbeTtlMs)
+        {
+            // 缓存命中（源未变）：继续用上次实测结果，仅重新走一遍确认计时
+            rawHidden = _winProbeHidden;
+            known = _winProbeKnown;
+        }
+        else
+        {
+            var (hidden, k) = ProbePlayerWindowHidden(src);
+            _winProbeHidden = hidden;
+            _winProbeKnown = k;
+            // 会话对应播放器变了 → 窗口状态重新观察
+            if (!string.Equals(_winProbeSrc, src, StringComparison.OrdinalIgnoreCase)) _hiddenSinceMs = 0;
+            _winProbeSrc = src;
+            _winProbeAtMs = now;
+            _winProbeValid = true;
+            rawHidden = hidden;
+            known = k;
+        }
+        // 防误弹确认：不可见需持续满 HiddenConfirmMs；一旦可见立即重置
+        bool reported = rawHidden && known;
+        if (!reported) _hiddenSinceMs = 0;
+        else if (_hiddenSinceMs == 0) _hiddenSinceMs = now;
+        else if (now - _hiddenSinceMs < HiddenConfirmMs) reported = false;
+
+        string desc = !known ? "unknown" : (reported ? "minimized/hidden" : (rawHidden ? "hidden(确认中)" : "visible"));
+        if (desc != _lastWinDesc)
+        {
+            _lastWinDesc = desc;
+            Console.Error.WriteLine($"[Daemon] 播放器窗口状态: {desc} src={src}");
+        }
+        return reported;
+    }
+
+    static (bool hidden, bool known) ProbePlayerWindowHidden(string? src)
+    {
+        var pids = new HashSet<uint>();
+        foreach (var n in PlayerProcsForSource(src))
+        {
+            try { foreach (var p in Process.GetProcessesByName(n)) pids.Add((uint)p.Id); } catch { }
+        }
+        if (pids.Count == 0) return (false, false);
+        return (!HasVisibleMainWindow(pids), true);
+    }
+
+    /// <summary>
+    /// 目标进程集合是否存在“可见、未最小化、未被 DWM 遮蔽、有标题且尺寸达标”的顶层窗口。
+    ///
+    /// <para>必须枚举窗口而非取 MainWindowHandle：多进程（Electron 系）播放器的子进程
+    /// MainWindowHandle 恒为 IntPtr.Zero，旧实现
+    /// <c>Players.Any(n =&gt; 进程 MainWindowHandle == 0 || IsIconic || !IsWindowVisible)</c>
+    /// 有两个致命问题：</para>
+    /// <list type="number">
+    /// <item>任一子进程无主窗口就算命中 Any → 播放器窗口明明可见仍上报“已最小化”；</item>
+    /// <item>跨全部播放器取 Any → 另一播放器被最小化/隐藏也会让正在播放且窗口可见的播放器被误判。</item>
+    /// </list>
+    /// <para>两者叠加导致“只要播放就弹出音乐岛”。</para>
+    /// </summary>
+    static bool HasVisibleMainWindow(HashSet<uint> pids)
+    {
+        bool found = false;
+        try
+        {
+            EnumWindows((hWnd, _) =>
+            {
+                if (found) return false;
+                try
+                {
+                    if (!IsWindowVisible(hWnd) || IsIconic(hWnd)) return true;   // 隐藏或最小化：不算可见
+                    if (GetWindowTextLength(hWnd) <= 0) return true;             // 无标题：托盘残留窗/输入法窗等
+                    if (!GetWindowRect(hWnd, out var r)) return true;
+                    if (r.Right - r.Left < MAIN_WINDOW_MIN_PX || r.Bottom - r.Top < MAIN_WINDOW_MIN_PX) return true;
+                    if (IsCloaked(hWnd)) return true;                            // 其它虚拟桌面/被遮蔽：当前不可见
+                    // 工具窗/点击穿透浮窗（桌面歌词等）不代表播放器主窗口可见
+                    if ((GetWindowLong(hWnd, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT)) != 0) return true;
+                    GetWindowThreadProcessId(hWnd, out var pid);
+                    if (!pids.Contains(pid)) return true;
+                }
+                catch { return true; }
+                found = true;
+                return false;
+            }, IntPtr.Zero);
+        }
+        catch { }
+        return found;
+    }
+
+    /// <summary>DWM 遮蔽（窗口在其它虚拟桌面/已被宿主隐藏）；接口不可用时按未遮蔽处理。</summary>
+    static bool IsCloaked(IntPtr hWnd)
+    {
+        try
+        {
+            return DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0;
+        }
+        catch { return false; }
     }
 
     /// <summary>
@@ -538,7 +705,11 @@ class Program
         }
         // hasSession: 白名单 + 进程运行 + 有歌名
         bool hs = !string.IsNullOrEmpty(t) && IsSourceWhitelistedAndRunning(src);
-        bool minimized = _hasProc && Players.Any(n => { try { return Process.GetProcessesByName(n).Any(p => { try { var h = p.MainWindowHandle; return h == IntPtr.Zero || IsIconic(h) || !IsWindowVisible(h); } catch { return false; } }); } catch { return false; } });
+        // isMinimized：仅指“当前活跃会话对应播放器”的主窗口最小化/不可见（且已持续足够久）。
+        // 旧实现基于全部播放器进程取 Any（子进程 MainWindowHandle 为 0 即命中），
+        // 几乎恒为 true，导致音乐岛“只要播放就弹出”，现已改为真实枚举顶层窗口。
+        bool minimized = hs && IsPlayerWindowHidden(src, out _);
+        if (!hs) _hiddenSinceMs = 0;   // 无会话时清零确认计时，避免下次播放开局即被判“已持续不可见”
         var sb = new StringBuilder();
         sb.Append("{");
         sb.Append("\"hasSession\":").Append(hs ? "true" : "false").Append(",");

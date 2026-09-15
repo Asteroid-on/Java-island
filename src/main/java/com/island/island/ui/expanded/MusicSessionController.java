@@ -53,6 +53,8 @@ class MusicSessionController {
     private String smTcCoverAppliedTrackId = "";
     /** 上一次处于严格播放状态的来源播放器标识，用于检测活跃播放器切换 */
     private String lastActiveSourceAppId = "";
+    /** 已应用到面板的内容签名（歌名|艺术家|封面指纹）：无变化时跳过重复重设文本与整窗重绘 */
+    private String lastPanelContentSig = "";
     // 歌词进度基于 daemon 汇报的 positionTicks；仅汽水音乐例外：
     // 其 SMTC 位置只在事件时刻更新（播放中静止、状态高频抖动），由本地估计器外推推进。
     // fallback 字段已废弃，wall-clock 自推进机制已移除（仅恢复为汽水专用形式）
@@ -73,6 +75,15 @@ class MusicSessionController {
 
     MusicSessionController(ExpandedIslandController controller) {
         this.controller = controller;
+    }
+
+    /**
+     * UI 是否处于展开/收起/切卡动画中。
+     * 这些动画本身已逐帧重绘整扇离屏缓冲（封面一同被画），封面旋转定时器再发一次 repaint
+     * 只会在同一帧造成两次全量重绘，两个 60FPS 定时器互抢 EDT → 观感为动画卡顿。
+     */
+    boolean isUiAnimationBusy() {
+        return controller.isExpandingOrCollapsing() || controller.isSlideAnimating();
     }
 
     // ── 包级状态访问器（供 MusicPanel / ExpandedIslandController 读取） ──
@@ -107,13 +118,32 @@ class MusicSessionController {
         return currentMusicInfo != null && currentMusicInfo.isStrictlyPlaying();
     }
 
+    /**
+     * 是否满足音乐岛自动弹出条件（严格正在播放 + 播放器主窗口最小化/不可见）。
+     * 供 ExpandedIslandController 复用，作为“因音乐而弹出/保持音乐岛”的唯一依据。
+     */
+    boolean shouldAutoPopupMusicIsland() {
+        return currentMusicInfo != null && currentMusicInfo.canAutoPopupMusicIsland();
+    }
+
+    /**
+     * 音乐岛是否应保持常驻（不因设备占用超时、停止收回计时、空闲收起而消失）：
+     * 仅当扩展岛正在展示音乐面板且仍在播放，或已满足自动弹出条件时成立。
+     * 旧实现只看“是否在播放”，导致播放器窗口仍可见时（不应弹出的场景）
+     * 任何来源弹出的扩展岛也被音乐钉住不消失，等价于“只要播放就弹出且常驻”。
+     */
+    boolean shouldKeepMusicIslandResident() {
+        if (currentMusicInfo == null || !currentMusicInfo.isStrictlyPlaying()) return false;
+        return controller.isMusicPanelShown() || currentMusicInfo.canAutoPopupMusicIsland();
+    }
+
     boolean hasSession() {
         return currentMusicInfo != null && currentMusicInfo.hasSession();
     }
 
     /** 是否有活跃媒体会话（有会话且曲目非空） */
     boolean hasActiveSession() {
-        return currentMusicInfo.hasSession() && !currentMusicInfo.getTitle().isEmpty();
+        return currentMusicInfo != null && currentMusicInfo.hasActiveSession();
     }
 
     /** 供 SystemTrayManager 通过 IslandWindow 获取 LyricsService 引用 */
@@ -158,6 +188,7 @@ class MusicSessionController {
             lastCoverBase64 = "";
             lastTriedCoverBase64 = "";
             smTcCoverAppliedTrackId = "";
+            lastPanelContentSig = "";
             lastFetchedTrackId = "";
             lastFetchedCoverTrackId = "";
             mp.flushCoverImage();
@@ -190,6 +221,7 @@ class MusicSessionController {
                 lastCoverBase64 = "";
                 lastTriedCoverBase64 = "";
                 smTcCoverAppliedTrackId = "";
+                lastPanelContentSig = "";
                 mp.flushCoverImage();
                 mp.repaintCover();
                 mp.setLyricsText(" ");
@@ -272,25 +304,41 @@ class MusicSessionController {
     }
 
     /**
-     * 音乐岛自动弹出逻辑：
-     * 音乐严格播放且播放器窗口最小化/不可见时，若扩展岛未显示或尚未显示音乐面板，
-     * 主动弹出扩展岛并展示音乐面板；播放期间同时取消设备占用自动隐藏，保证常驻。
+     * 音乐岛自动弹出逻辑（严格受两个条件约束）：
+     * <ol>
+     *   <li>存在活跃媒体会话且播放状态严格为 Playing（暂停/停止/无会话不弹）；</li>
+     *   <li>播放器主窗口处于最小化或不可见状态（窗口仍可见时不弹）。</li>
+     * </ol>
+     * 两者同时成立且扩展岛未显示音乐面板时，才主动弹出并展示音乐面板。
+     * 播放期间的“常驻”（取消设备占用 5 秒自动隐藏与停止收回计时）只在
+     * 扩展岛已在展示音乐面板（即音乐岛已弹出）或已满足上述弹出条件时维持，
+     * 不因“单纯在播放”钉住其它方式弹出的扩展岛；手动显示与托盘操作不受影响。
      */
     private void updateMusicIslandAutoPopup(MusicInfo info) {
         if (!info.isStrictlyPlaying()) return;
         if (controller.isExpandingOrCollapsing()) return;
-        // 播放期间扩展岛常驻：取消设备 5 秒自动隐藏与停止收回计时
-        controller.cancelDeviceAutoHideTimer();
-        controller.clearDeviceAutoExpanded();
-        controller.cancelMusicStopAutoHideTimer();
-        if (!info.isPlayerMinimized()) return;
+        boolean popupEligible = info.canAutoPopupMusicIsland();
+        if (controller.isMusicPanelShown() || popupEligible) {
+            // 音乐岛已弹出/即将弹出：播放期间扩展岛常驻，取消设备 5 秒自动隐藏与停止收回计时
+            controller.cancelDeviceAutoHideTimer();
+            controller.clearDeviceAutoExpanded();
+            controller.cancelMusicStopAutoHideTimer();
+        }
+        if (!popupEligible) {
+            // 播放器窗口仍可见（无会话/仅暂停已由上面的 isStrictlyPlaying 拦住）：不自动弹出
+            if (AppConstants.DEBUG_CONSOLE) {
+                System.out.println("[IslandWindow] 播放中但播放器窗口未最小化/不可见，不自动弹出音乐岛: "
+                        + info.getSourceAppId());
+            }
+            return;
+        }
         if (controller.isMusicPopupSuppressedByUser()) return;
         if (controller.isMusicPanelShown()) {
             controller.setMusicPanelAutoShownForSession(true);
             return;
         }
         if (!controller.isVisible()) {
-            AppLogger.info("IslandWindow", "检测到音乐播放且播放器最小化，自动弹出音乐岛");
+            AppLogger.info("IslandWindow", "检测到正在播放且播放器已最小化，自动弹出音乐岛");
             controller.setMusicAutoExpanded(true);
             controller.setMusicPanelAutoShownForSession(true);
             controller.show();
@@ -302,11 +350,28 @@ class MusicSessionController {
 
     /** 应用当前曲目信息到音乐面板（歌名/艺术家/歌词/封面），EDT */
     void updateMusicPanelContent() {
+        updateMusicPanelContent(true);
+    }
+
+    /**
+     * @param force false 时若内容签名（歌名/艺术家/封面）无变化，则只按播放位置推进歌词游标，
+     *              不重复重设文本（含字体回退解析）也不触发封面重绘。
+     *              面板重新挂载、以及 SMTC 封面异步解码未回来的窗口期内轮询再次进入时，
+     *              内容其实未变：无条件重设与重绘会在展开/切卡动画中插进全量重绘帧。
+     */
+    void updateMusicPanelContent(boolean force) {
         MusicPanel mp = controller.getMusicPanel();
         if (!mp.isInitialized() || currentMusicInfo == null) return;
         String title = currentMusicInfo.getTitle();
         String artist = currentMusicInfo.getArtist();
         String fullTitle = title, fullArtist = artist;
+        String b64 = currentMusicInfo.getThumbnailBase64();
+        String sig = fullTitle + '|' + fullArtist + '|' + b64.length() + ':' + b64.hashCode();
+        if (!force && sig.equals(lastPanelContentSig)) {
+            if (!lrcLines.isEmpty()) updateProgressDisplay(currentMusicInfo);
+            return;
+        }
+        lastPanelContentSig = sig;
         if (title.length() > 15) title = title.substring(0, 14) + "...";
         mp.setTitleText(title.isEmpty() ? "未知歌曲" : title);
         if (artist.length() > 12) artist = artist.substring(0, 11) + "...";
@@ -326,7 +391,6 @@ class MusicSessionController {
         }
 
         // 封面：SMTC Base64 强制优先；daemon 时序滞后的旧图不信任，低分辨率缩略图插值提升后使用
-        String b64 = currentMusicInfo.getThumbnailBase64();
         if (!b64.isEmpty()) {
             if (b64.equals(prevTrackCoverBase64)) {
                 // 新曲目仍上报上一曲的缩略图 → 判定为 daemon 旧图，不信任，等待网络封面补位
@@ -335,30 +399,14 @@ class MusicSessionController {
                 }
                 smTcCoverAppliedTrackId = "";
             } else if (b64.equals(lastTriedCoverBase64)) {
-                // 已尝试解码：仅当该图确实已应用时标记，避免每轮重复解码
+                // 已提交解码/已应用：仅当该图确实已应用时标记，避免每轮重复解码
                 smTcCoverAppliedTrackId = b64.equals(lastCoverBase64) ? fullTitle + "|" + fullArtist : "";
             } else {
                 lastTriedCoverBase64 = b64;
                 smTcCoverAppliedTrackId = "";
-                try {
-                    byte[] data = Base64.getDecoder().decode(b64);
-                    Image raw = Toolkit.getDefaultToolkit().createImage(data);
-                    MediaTracker mt = new MediaTracker(new JLabel());
-                    mt.addImage(raw, 0);
-                    mt.waitForID(0, 1000);
-                    int w = raw.getWidth(null);
-                    if (w > 0) {
-                        // 强制使用 SMTC 缩略图：低分辨率由 createCircularCover 双三次插值提升至 COVER_HIRES(144px)
-                        if (w < 200) {
-                            System.out.println("[IslandWindow] SMTC缩略图分辨率较低(" + w + "px)，已插值提升显示");
-                        }
-                        mp.setCoverImage(createCircularCover(raw, IslandUiStyle.COVER_HIRES));
-                        lastCoverBase64 = b64;
-                        smTcCoverAppliedTrackId = fullTitle + "|" + fullArtist;
-                    }
-                } catch (Exception ex) {
-                    // 解码失败：保留当前封面显示，标记保持未应用，让 URL 源补位，避免封面卡死
-                }
+                // 解码与超采样裁剪移出 EDT：旧实现用 MediaTracker.waitForID(0, 1000) 在 EDT 阻塞等图，
+                // 时机恰与新封面到达 + 音乐岛弹出重合，直接吃掉展开/滑动动画的若干帧
+                startSmtcCoverDecode(b64, fullTitle + "|" + fullArtist);
             }
         } else {
             smTcCoverAppliedTrackId = "";
@@ -371,6 +419,47 @@ class MusicSessionController {
             // 仅在曲目切换时才清空旧封面（由 onMusicInfoChanged 切歌流程处理）
         }
         mp.repaintCover();
+    }
+
+    /**
+     * SMTC Base64 封面后台解码 + 超采样圆形裁剪，完成后回 EDT 应用。
+     *
+     * <p>与旧版行为完全一致（同样优先 SMTC、低分辨率插值提升、失败时等 URL 补位），
+     * 仅把 base64 解码、{@code MediaTracker} 等图与双三次插值从 EDT 搬走；
+     * 应用前按 b64 严格校验“仍是当前会话上报的图且未被判为旧图”，避免解码回米的旧图覆盖新图。</p>
+     */
+    private void startSmtcCoverDecode(String b64, String trackId) {
+        new Thread(() -> {
+            Image circular = null;
+            try {
+                byte[] data = Base64.getDecoder().decode(b64);
+                Image raw = Toolkit.getDefaultToolkit().createImage(data);
+                MediaTracker mt = new MediaTracker(new JLabel());
+                mt.addImage(raw, 0);
+                mt.waitForID(0, 1000);
+                int w = raw.getWidth(null);
+                if (w > 0) {
+                    // 强制使用 SMTC 缩略图：低分辨率由 createCircularCover 双三次插值提升至 COVER_HIRES(144px)
+                    if (w < 200) {
+                        System.out.println("[IslandWindow] SMTC缩略图分辨率较低(" + w + "px)，已插值提升显示");
+                    }
+                    circular = createCircularCover(raw, IslandUiStyle.COVER_HIRES);
+                }
+            } catch (Exception ex) {
+                // 解码失败：保留当前封面显示，标记保持未应用，让 URL 源补位，避免封面卡死
+            }
+            if (circular == null) return;
+            final Image toApply = circular;
+            SwingUtilities.invokeLater(() -> {
+                if (currentMusicInfo == null || !b64.equals(currentMusicInfo.getThumbnailBase64())) return;
+                if (b64.equals(prevTrackCoverBase64) || b64.equals(lastCoverBase64)) return;
+                MusicPanel mp = controller.getMusicPanel();
+                mp.setCoverImage(toApply);
+                lastCoverBase64 = b64;
+                smTcCoverAppliedTrackId = trackId;
+                mp.repaintCover();
+            });
+        }, "SmtcCoverDecoder").start();
     }
 
     /** 根据 daemon 汇报的 positionTicks 推进歌词游标（EDT） */
@@ -552,26 +641,30 @@ class MusicSessionController {
                 if (!url.isEmpty()) {
                     System.out.println("[IslandWindow] 封面URL: " + url);
                     Image cover = downloadImageFromUrl(url);
-                    if (cover != null) SwingUtilities.invokeLater(() -> {
-                        // stale-track 校验：封面只属于发起请求时的曲目
-                        String currentTrackId = currentMusicInfo.getTitle() + "|" + currentMusicInfo.getArtist();
-                        if (!trackId.equals(currentTrackId)) {
-                            System.out.println("[IslandWindow] 封面已过期（曲目已切换），丢弃");
-                            return;
-                        }
-                        // SMTC 缩略图优先：当前曲目已有 SMTC 缩略图时立即尝试应用，
-                        // 应用成功则跳过 URL 结果；解码失败则仍用 URL 结果补位，防止封面卡死
-                        if (!currentMusicInfo.getThumbnailBase64().isEmpty()) {
-                            updateMusicPanelContent();
-                            if (currentTrackId.equals(smTcCoverAppliedTrackId)) {
-                                System.out.println("[IslandWindow] SMTC封面已应用，跳过URL封面");
+                    if (cover != null) {
+                        // 超采样圆形裁剪在后台线程完成（与旧版同参数同结果），EDT 只做赋值与重绘
+                        final Image circular = createCircularCover(cover, IslandUiStyle.COVER_HIRES);
+                        SwingUtilities.invokeLater(() -> {
+                            // stale-track 校验：封面只属于发起请求时的曲目
+                            String currentTrackId = currentMusicInfo.getTitle() + "|" + currentMusicInfo.getArtist();
+                            if (!trackId.equals(currentTrackId)) {
+                                System.out.println("[IslandWindow] 封面已过期（曲目已切换），丢弃");
                                 return;
                             }
-                        }
-                        MusicPanel mp = controller.getMusicPanel();
-                        mp.setCoverImage(createCircularCover(cover, IslandUiStyle.COVER_HIRES));
-                        mp.repaintCover();
-                    });
+                            // SMTC 缩略图优先：当前曲目已有 SMTC 缩略图时立即尝试应用，
+                            // 应用成功则跳过 URL 结果；解码失败则仍用 URL 结果补位，防止封面卡死
+                            if (!currentMusicInfo.getThumbnailBase64().isEmpty()) {
+                                updateMusicPanelContent();
+                                if (currentTrackId.equals(smTcCoverAppliedTrackId)) {
+                                    System.out.println("[IslandWindow] SMTC封面已应用，跳过URL封面");
+                                    return;
+                                }
+                            }
+                            MusicPanel mp = controller.getMusicPanel();
+                            mp.setCoverImage(circular);
+                            mp.repaintCover();
+                        });
+                    }
                 } else {
                     System.out.println("[IslandWindow] 封面获取失败（无结果）");
                 }

@@ -20,7 +20,13 @@ public final class MusicInfo {
     private final long endTimeTicks;
     private final String sourceAppId;
     private final String thumbnailBase64;
-    /** 播放器主窗口是否处于最小化或不可见状态（由 MediaInfoDaemon 的 isMinimized 字段上报） */
+    /**
+     * 播放器主窗口是否处于最小化或不可见状态（由 MediaInfoDaemon 的 isMinimized 字段上报）。
+     *
+     * <p>daemon 只依据<b>当前活跃会话对应播放器</b>的真实顶层窗口状态上报：
+     * 窗口可见时为 false，窗口被最小化/隐藏/进程无法解析时按“不满足条件”处理，
+     * 因此该字段为 true 即代表播放器主窗口确实不可见。</p>
+     */
     private final boolean playerMinimized;
 
     private MusicInfo(Builder builder) {
@@ -58,6 +64,24 @@ public final class MusicInfo {
     /** 是否严格在播放（仅 status=Playing，pause 不算；用于控制封面旋转等动画） */
     public boolean isStrictlyPlaying() {
         return hasSession && "Playing".equalsIgnoreCase(playbackStatus);
+    }
+
+    /** 是否存在活跃媒体会话（有会话且有曲目名，排除只有会话骨架没有曲目、或曲目仅为空白字符的情况） */
+    public boolean hasActiveSession() {
+        return hasSession && !title.trim().isEmpty();
+    }
+
+    /**
+     * 音乐岛自动弹出的唯一判定入口，两个条件必须同时成立：
+     * <ol>
+     *   <li>存在活跃媒体会话，且播放状态严格为 Playing（仅暂停/停止/无会话均不成立）；</li>
+     *   <li>播放器主窗口处于最小化或不可见状态（窗口仍可见时不成立）。</li>
+     * </ol>
+     * 任何需要“因音乐播放而弹出/常驻扩展岛”的判断都必须走本方法，
+     * 不允许再单独用 {@link #isStrictlyPlaying()} 作为弹出依据。
+     */
+    public boolean canAutoPopupMusicIsland() {
+        return hasActiveSession() && isStrictlyPlaying() && isPlayerMinimized();
     }
 
     /** 是否同一首歌（去重用，含来源播放器标识） */
@@ -105,6 +129,7 @@ public final class MusicInfo {
 
     @Override
     public String toString() {
-        return "MusicInfo{title='" + title + "', artist='" + artist + "', status=" + playbackStatus + "}";
+        return "MusicInfo{title='" + title + "', artist='" + artist + "', status=" + playbackStatus
+                + ", playerMinimized=" + playerMinimized + "}";
     }
 }

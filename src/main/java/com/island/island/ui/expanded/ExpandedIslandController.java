@@ -389,8 +389,8 @@ public class ExpandedIslandController {
                 // 设备占用触发的自动弹出：展开完成后再显示图标，并启动 5 秒自动隐藏计时
                 if (deviceAutoExpanded) {
                     deviceUsagePanel.applyUsageStates();
-                    if (musicSessionController.isStrictlyPlaying()) {
-                        // 音乐播放中：取消设备 5 秒自动隐藏，改为展示音乐面板常驻
+                    if (musicSessionController.shouldAutoPopupMusicIsland()) {
+                        // 正在播放且播放器已最小化：取消设备 5 秒自动隐藏，改为展示音乐面板常驻
                         cancelDeviceAutoHideTimer();
                         deviceAutoExpanded = false;
                         musicAutoExpanded = true;
@@ -739,7 +739,11 @@ public class ExpandedIslandController {
                 musicPanel.startCoverRotation();
                 musicPanel.startLyricScrollTimer();
             }
-            startSlideAnimation(1.0f);
+            // build + 挂载 + 内容应用已在本帧连续执行，同帧再启动滑动会让这一帧远超帧预算
+            // （表现为弹出后先顿一下再滑）→ 推到下一帧启动，时长/缓动不变
+            SwingUtilities.invokeLater(() -> {
+                if (isVisible() && musicPanelShownInExpanded) startSlideAnimation(1.0f);
+            });
         } else {
             // 无媒体会话 → 显示占位面板
             System.out.println("[IslandWindow] 滚轮向下：无会话，显示占位面板");
@@ -775,7 +779,10 @@ public class ExpandedIslandController {
                     }
                 }
             }
-            startSlideAnimation(1.0f);
+            // 同上：挂载与动画启动分帧，避免同帧双重开销
+            SwingUtilities.invokeLater(() -> {
+                if (isVisible() && musicPanelShownInExpanded) startSlideAnimation(1.0f);
+            });
         }
     }
 
@@ -811,7 +818,9 @@ public class ExpandedIslandController {
             rp.add(musicPanel.getPanel());
             System.out.println("[IslandWindow] 音乐面板已添加到扩展岛");
         } else {
-            musicSessionController.updateMusicPanelContent();
+            // 已挂载：走“内容无变化则只推进歌词游标”的轻量路径，
+            // 避免每 300ms 轮询重复重设文本与触发整窗重绘
+            musicSessionController.updateMusicPanelContent(false);
         }
         // 仅布局变更时才触发全量重排，避免歌词闪烁
         if (replacedPlaceholder || !found) {
@@ -820,20 +829,29 @@ public class ExpandedIslandController {
         }
     }
 
+    /** 卡片滑动切换动画是否进行中（供封面旋转跳过重复重绘） */
+    boolean isSlideAnimating() {
+        return gestureSlideAnimTimer != null;
+    }
+
     private void startSlideAnimation(float target) {
         if (gestureSlideAnimTimer != null) gestureSlideAnimTimer.stop();
         final float from = gestureSlideProgress;
         final float to = target;
         final long animStart = System.nanoTime();
-        gestureSlideAnimTimer = new Timer(IslandUiStyle.SLIDE_ANIM_FRAME_MS, e -> {
+        gestureSlideAnimTimer = new Timer(IslandUiStyle.slideAnimFrameMs(), e -> {
             float elapsed = (System.nanoTime() - animStart) / (IslandUiStyle.SLIDE_ANIM_DURATION_MS * 1_000_000f);
             float t = Math.min(elapsed, 1.0f);
             float eased = 1 - (1 - t) * (1 - t) * (1 - t) * (1 - t); // quartic ease-out
             gestureSlideProgress = from + (to - from) * eased;
-            layoutExpandedPanel();
+            // 动画帧只改几何 + 重绘：切卡全程各卡片只变 x（宽高恒定），
+            // 每帧 revalidate() 走整棵组件树校验流程只会挤占绘制预算，不参与画面变化
+            layoutExpandedPanel(false);
             if (t >= 1.0f) {
                 gestureSlideAnimTimer.stop();
                 gestureSlideAnimTimer = null;
+                // 收尾补一次完整校验，保证后续尺寸/布局计算与旧行为一致
+                layoutExpandedPanel(true);
             }
         });
         gestureSlideAnimTimer.start();
@@ -858,6 +876,15 @@ public class ExpandedIslandController {
 
     /** 按滑动进度同步定位各卡片（电池 / 占位 / 设备状态 / 音乐面板 / 天气详情卡片） */
     void layoutExpandedPanel() {
+        layoutExpandedPanel(true);
+    }
+
+    /**
+     * @param validate false 表示仅更新子组件 bounds 并重绘，跳过 {@code revalidate()} 校验流程。
+     *                 根面板为 null 布局且滑动中尺寸恒定，动画帧无需校验；
+     *                 组件增删与动画收尾仍走 true，保持原有尺寸计算生效时机。
+     */
+    void layoutExpandedPanel(boolean validate) {
         if (expandedWindow == null) return;
         Container cp = expandedWindow.getContentPane();
         if (cp.getComponentCount() == 0) return;
@@ -917,7 +944,9 @@ public class ExpandedIslandController {
                         pw, IslandUiStyle.WEATHER_DETAIL_HEIGHT);
             }
         }
-        rp.revalidate();
+        if (validate) {
+            rp.revalidate();
+        }
         rp.repaint();
     }
 
@@ -1070,9 +1099,9 @@ public class ExpandedIslandController {
                 startIdleAutoCollapseTimer();
                 return;
             }
-            if (musicSessionController.isStrictlyPlaying()) {
-                // 音乐播放期间扩展岛保持常驻，跳过设备占用超时隐藏
-                AppLogger.info("IslandWindow", "音乐播放中，跳过设备占用超时自动隐藏");
+            if (musicSessionController.shouldKeepMusicIslandResident()) {
+                // 音乐岛正在常驻（播放中且已满足音乐岛弹出/常驻条件），跳过设备占用超时隐藏
+                AppLogger.info("IslandWindow", "音乐岛常驻中，跳过设备占用超时自动隐藏");
                 return;
             }
             AppLogger.info("IslandWindow", "设备占用自动弹出超时，自动隐藏扩展岛");
@@ -1127,9 +1156,9 @@ public class ExpandedIslandController {
         }
     }
 
-    /** 音乐严格播放期间扩展岛需常驻，阻断空闲自动收起 */
+    /** 音乐岛常驻期间阻断空闲自动收起（需同时满足播放中且符合音乐岛弹出/常驻条件） */
     private boolean isMusicPlaybackResident() {
-        return musicSessionController.isStrictlyPlaying();
+        return musicSessionController.shouldKeepMusicIslandResident();
     }
 
     /**

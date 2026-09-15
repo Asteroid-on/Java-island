@@ -90,6 +90,8 @@ public final class IslandUiStyle {
     public static final int EXPAND_ANIM_FRAME_MS_HIDPI = 16;
     public static final int SLIDE_ANIM_DURATION_MS = 400;
     public static final int SLIDE_ANIM_FRAME_MS = 11; // 约 90 FPS（1000/11 ≈ 90.9）
+    /** 高 DPI 下卡片滑动动画帧间隔：与展开/收起同策略（每帧绘制成本随缩放平方增长，11ms 预算无法兑现被 Timer 合并掉帧） */
+    public static final int SLIDE_ANIM_FRAME_MS_HIDPI = EXPAND_ANIM_FRAME_MS_HIDPI;
     /** 直接隐藏阶段1（两边向中间收缩成小球）时长 */
     public static final int SLIDE_UP_SHRINK_MS = 400;
     /** 直接隐藏阶段2（小球向上滑出屏幕）时长：快速滑出，无需看清 */
@@ -190,5 +192,23 @@ public final class IslandUiStyle {
             }
         }
         return currentUiScale() > 1.0 ? EXPAND_ANIM_FRAME_MS_HIDPI : EXPAND_ANIM_FRAME_MS;
+    }
+
+    /**
+     * 卡片滑动切换动画帧间隔（DPI 自适应）：100% 缩放 11ms（约 90FPS），
+     * 高 DPI 下 16ms（约 60FPS）。<b>动画时长与缓动曲线不变</b>，仅提高每帧绘制预算，
+     * 避免 Timer 事件合并导致的帧间隔抖动（表现为切卡不流畅）。
+     * 性能对比测试可用 -Disland.slideAnimFrameMs=N 临时覆盖（生产不设置该属性）。
+     */
+    public static int slideAnimFrameMs() {
+        String override = System.getProperty("island.slideAnimFrameMs");
+        if (override != null) {
+            try {
+                return Integer.parseInt(override.trim());
+            } catch (NumberFormatException ignored) {
+                // 覆盖值非法时回退到自适应策略
+            }
+        }
+        return currentUiScale() > 1.0 ? SLIDE_ANIM_FRAME_MS_HIDPI : SLIDE_ANIM_FRAME_MS;
     }
 }
