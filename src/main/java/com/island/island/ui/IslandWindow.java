@@ -14,6 +14,7 @@ import com.island.privacy.PrivacyMonitor;
 import com.island.qq.QqNotificationMonitor;
 import com.island.tray.SystemTrayManager;
 import com.island.util.AppLogger;
+import com.island.util.Win32WindowUtil;
 import com.island.weather.HybridWeatherService;
 import com.island.weather.WeatherIconMapper;
 import com.island.weather.WeatherInfo;
@@ -209,9 +210,46 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
         if (monitor == null) return;
         this.privacyMonitor = monitor;
         AppLogger.info("IslandWindow", "PrivacyMonitor 已注入，开始监听");
-        monitor.setListener((camera, mic) ->
-                SwingUtilities.invokeLater(() -> expandedController.onDeviceUsageChanged(camera, mic)));
+        monitor.setListener((camera, mic) -> {
+            long postedAt = System.nanoTime();
+            SwingUtilities.invokeLater(() -> {
+                long t0 = System.nanoTime();
+                expandedController.onDeviceUsageChanged(camera, mic);
+                // 定位埋点：岛内付出的成本（EDT 执行 + 排队）。若首次明显慢于后续
+                // → 仍有未捂热的冷路径；若首次已与后续同为毫秒级但游戏仍卡顿
+                // → 残余卡顿不在岛侧（麦克风激活瞬间的系统级事件）
+                AppLogger.info("PrivacyMonitor", "设备占用回调链: EDT 执行 "
+                        + (System.nanoTime() - t0) / 1_000_000 + "ms，排队 "
+                        + (t0 - postedAt) / 1_000_000 + "ms (camera=" + camera + ", mic=" + mic + ")");
+            });
+        });
         monitor.start();
+        schedulePrivacyCallbackWarmup();
+    }
+
+    /**
+     * 首占用回调链预热：设备“空闲→占用”首次跳变会一次性付出整条链路的冷成本
+     * （相关类初始化 + 解释执行 + EDT 冷唤醒 + 前台全屏检测里的 JNA/AWT-GDI 首调），
+     * 游戏场景下即使扩展岛被全屏抑制拦住未弹，该突发仍会抢走游戏渲染线程的调度预算
+     * （实测特征：每进程仅首次开语音卡顿，换新对局不复现；预热主体链路后卡顿变短但未消失，
+     * 说明 firstUsage 上升沿分支体也是冷成本来源，一并补跑）。
+     * 启动 3 秒后以“无状态变化”的合成回调 + 上升沿预热把全部一次性冷成本
+     * 挪到无感知时刻，不触发任何日志/标志变更/动画/弹出。
+     */
+    private void schedulePrivacyCallbackWarmup() {
+        Timer warmup = new Timer(3000, null);
+        warmup.setRepeats(false);
+        warmup.addActionListener(e -> {
+            // EDT 预热抑制分支的两个前置件：前台全屏检测（JNA user32 + GraphicsEnvironment 屏幕枚举）
+            Win32WindowUtil.isForegroundFullscreenWindow();
+            // 预热 firstUsage 分支体：判定 getter + 指示器状态机上升沿（内部已按真实状态收敛）
+            expandedController.warmUpFirstUsageEdges();
+            // 预热 轮询线程→invokeLater→EDT 的 updateUsage 回调链（值与当前一致 → 全程无副作用）
+            if (privacyMonitor != null) {
+                privacyMonitor.resendCurrentState();
+            }
+        });
+        warmup.start();
     }
 
     /** 注入微信消息通知监控器，由 IslandApplication 调用 */
@@ -303,6 +341,16 @@ public class IslandWindow extends JWindow implements Serializable, ExpandedIslan
     /** 扩展岛窗口（供 SystemTrayManager 在可见期间重申不抢焦点置顶；未创建时为 null） */
     public JWindow getExpandedWindow() {
         return expandedController.getExpandedWindow();
+    }
+
+    /** 扩展岛是否可见或处于展开/收起动画中（供 SystemTrayManager 全屏抑制判断） */
+    public boolean isExpandedIslandVisibleOrAnimating() {
+        return expandedController.isVisibleOrAnimating();
+    }
+
+    /** 全屏抑制：收起可见/动画中的扩展岛（供 SystemTrayManager 全屏检测切 EDT 调用） */
+    public void collapseExpandedIslandForFullscreen() {
+        expandedController.collapseByFullscreen();
     }
 
     public void restoreTimeDisplay() {

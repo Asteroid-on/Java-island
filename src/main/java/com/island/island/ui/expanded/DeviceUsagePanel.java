@@ -2,6 +2,7 @@ package com.island.island.ui.expanded;
 
 import com.island.island.ui.IslandUiStyle;
 import com.island.util.AppLogger;
+import com.island.util.Win32WindowUtil;
 import com.island.weather.WeatherIconMapper;
 import com.island.weather.WeatherInfo;
 
@@ -268,12 +269,19 @@ class DeviceUsagePanel {
         // 设备从全部空闲变为首次占用：自动弹出扩展岛（先弹出、后显示图标）
         boolean firstUsage = !wasAnyInUse && isAnyInUse;
         if (firstUsage && !controller.isVisible() && !controller.isExpandingOrCollapsing()) {
-            AppLogger.info("IslandWindow", "检测到设备首次占用，自动弹出扩展岛");
-            controller.setDeviceAutoExpanded(true);
-            controller.cancelDeviceAutoHideTimer();
-            controller.show();
-            // 图标状态延后到展开动画完成时应用，避免图标在展开中途出现
-            return;
+            // 全屏抑制（入口层）：前台为全屏/无边框全屏窗口（如游戏内开语音触发麦克风）时
+            // 不自动弹出扩展岛，仅走下方 applyUsageStates 记录占用状态；
+            // controller.show() 内还有展开一刻的最终复测兜底检测竞态。
+            if (Win32WindowUtil.isForegroundFullscreenWindow()) {
+                AppLogger.info("IslandWindow", "全屏抑制：前台全屏窗口，设备占用不自动弹出扩展岛（仅记录占用状态）");
+            } else {
+                AppLogger.info("IslandWindow", "检测到设备首次占用，自动弹出扩展岛");
+                controller.setDeviceAutoExpanded(true);
+                controller.cancelDeviceAutoHideTimer();
+                controller.show();
+                // 图标状态延后到展开动画完成时应用，避免图标在展开中途出现
+                return;
+            }
         }
         applyUsageStates();
     }
@@ -284,6 +292,24 @@ class DeviceUsagePanel {
         applyDesiredState(micIndicator, micInUse);
         updateDotTarget();
         refreshPanelVisibility();
+    }
+
+    /**
+     * 预热占用状态机上升沿（启动空闲期由 IslandWindow 回调链预热调用，EDT）：
+     * 首次真实占用的 firstUsage 分支与指示器 ICON 切换从未被执行过，
+     * 其冷成本（分支首执行 + 时间戳/定时器判定）会叠加进用户可感知的单次抖动。
+     * 此处把上升沿各方法补跑一遍，随后立即按真实占用状态收敛：
+     * 空闲时 cleanupStaleUsageState 将预热残留（phase/dotProgress）全部归零，
+     * 真实占用时 applyUsageStates 已恢复到与之一致的展示状态，均无副作用。
+     */
+    void warmUpFirstUsageEdges() {
+        applyDesiredState(cameraIndicator, true);
+        applyDesiredState(micIndicator, true);
+        updateDotTarget();
+        advanceDotAnimation();
+        refreshPanelVisibility();
+        applyUsageStates();
+        cleanupStaleUsageState();
     }
 
     /**

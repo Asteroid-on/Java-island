@@ -467,6 +467,9 @@ public class SystemTrayManager {
         private volatile boolean running = true;
         /** 前台无边框全屏窗口状态（日志去重用，避免重复刷屏） */
         private boolean lastFullscreenFg = false;
+        /** 前台全屏周期检测节流时间戳：扩展岛可见/不可见两条轮询分支共用，
+         *  必须为字段（旧实现为 run() 局部变量时，扩展岛可见分支 continue 短路导致检测永不执行） */
+        private long lastFullscreenCheck = 0;
         /** 上一轮轮询模式：检测慢→快翻转，用户开始交互的瞬间即时重申高精度定时器 */
         private boolean lastFastPoll = false;
 
@@ -478,7 +481,6 @@ public class SystemTrayManager {
         }
 
         public void run() {
-            long lastFullscreenCheck = 0;
             while (running) {
                 try {
                     // 近触发区/鼠标在岛上标记：块外声明，供自适应轮询间隔使用
@@ -517,6 +519,10 @@ public class SystemTrayManager {
                             if (expanded != null) {
                                 Win32WindowUtil.topmostNoActivate(expanded);
                             }
+                            // 全屏抑制：此分支也必须执行周期全屏检测——旧实现在此 continue
+                            // 短路跳过了循环尾部的检测代码，导致进入全屏后已展开的扩展岛
+                            // （如竞态窗口漏出的设备占用弹出）不会被收起
+                            pollFullscreenSuppression();
                             Thread.sleep(AppConstants.FAST_POLL_INTERVAL);
                             continue;
                         }
@@ -524,8 +530,10 @@ public class SystemTrayManager {
                         // 逻辑：鼠标靠近上边框或在岛上时显示，否则隐藏
                         if ((isNearTopEdge || isMouseOverIsland) &&
                             service.getState() == IslandState.HIDDEN) {
-                            // 前台无边框全屏窗口（游戏全屏）场景：不弹出岛，避免与游戏抢 Z 序/焦点；
-                            // 实时检测保证进入全屏后立即生效（不等周期检测）
+                            // 前台无边框全屏窗口（游戏全屏）场景：不弹出主岛，避免与游戏抢 Z 序/焦点；
+                            // 实时检测保证进入全屏后立即生效（不等周期检测）。
+                            // 注：主岛点击展开扩展岛仍不受限（显式操作放行），
+                            // 扩展岛自动弹出的抑制在 ExpandedIslandController.show() 内做最终判断
                             if (Win32WindowUtil.isForegroundFullscreenWindow()) {
                                 Thread.sleep(AppConstants.FAST_POLL_INTERVAL);
                                 continue;
@@ -578,27 +586,8 @@ public class SystemTrayManager {
                             ? AppConstants.FAST_POLL_INTERVAL
                             : AppConstants.HIDE_CHECK_INTERVAL);
 
-                    // 前台无边框全屏窗口检测（5s 一次，状态变化才记日志）：
-                    // 全屏期间岛不显示；已显示的岛在进入全屏后自动收起；
-                    // 独占全屏游戏接管显示输出时任何窗口都无法覆盖
-                    long now = System.currentTimeMillis();
-                    if (now - lastFullscreenCheck >= 5000) {
-                        lastFullscreenCheck = now;
-                        boolean fgFullscreen = Win32WindowUtil.isForegroundFullscreenWindow();
-                        if (fgFullscreen != lastFullscreenFg) {
-                            lastFullscreenFg = fgFullscreen;
-                            if (fgFullscreen) {
-                                AppLogger.info("SystemTray", "检测到前台无边框全屏窗口：暂停鼠标触发显示岛；"
-                                        + "若为独占全屏游戏，Windows 会接管显示输出导致岛无法覆盖");
-                            }
-                        }
-                        // 进入全屏时自动收起已显示的岛（通知展示中不打断）
-                        if (fgFullscreen && service.getState() == IslandState.VISIBLE
-                                && !islandWindow.isShowingNotification()) {
-                            service.hide();
-                            animateHide();
-                        }
-                    }
+                    // 前台无边框全屏窗口周期检测（5s 节流）：全屏期间岛不显示、已显示的自动收起
+                    pollFullscreenSuppression();
                 } catch (InterruptedException e) {
                     // dispose 触发的正常退出（running 已置 false）；
                     // 意外中断则吞掉继续轮询，防止线程暴毙导致岛彻底不响应鼠标
@@ -606,6 +595,43 @@ public class SystemTrayManager {
                         break;
                     }
                 }
+            }
+        }
+
+        /**
+         * 全屏抑制周期检测（5s 节流，状态变化才记日志）：全屏期间岛不显示、不得保持可见——
+         * - 可见/展开动画中的扩展岛：直接隐藏方式收起（切 EDT 执行，含展开中途竞态兜底）；
+         * - 已显示的主岛：自动收起（通知展示中不打断）。
+         * 独占全屏游戏接管显示输出时任何窗口都无法覆盖，无边框全屏依赖此处检测与
+         * 鼠标触发处的实时复测共同保证抑制生效。
+         */
+        private void pollFullscreenSuppression() {
+            long now = System.currentTimeMillis();
+            if (now - lastFullscreenCheck < 5000) {
+                return;
+            }
+            lastFullscreenCheck = now;
+            boolean fgFullscreen = Win32WindowUtil.isForegroundFullscreenWindow();
+            if (fgFullscreen != lastFullscreenFg) {
+                lastFullscreenFg = fgFullscreen;
+                if (fgFullscreen) {
+                    AppLogger.info("SystemTray", "检测到前台无边框全屏窗口：暂停鼠标触发显示岛，"
+                            + "可见/展开中的扩展岛与主岛自动收起；"
+                            + "若为独占全屏游戏，Windows 会接管显示输出导致岛无法覆盖");
+                }
+            }
+            if (!fgFullscreen) {
+                return;
+            }
+            // 进入/处于全屏时收起可见或展开动画中的扩展岛（Swing 写操作切 EDT；
+            // collapseByFullscreen 内部二次校验状态，重复调用安全）
+            if (islandWindow.isExpandedIslandVisibleOrAnimating()) {
+                SwingUtilities.invokeLater(() -> islandWindow.collapseExpandedIslandForFullscreen());
+            }
+            // 进入全屏时自动收起已显示的主岛（通知展示中不打断）
+            if (service.getState() == IslandState.VISIBLE && !islandWindow.isShowingNotification()) {
+                service.hide();
+                animateHide();
             }
         }
 

@@ -82,6 +82,8 @@ public class ExpandedIslandController {
     private boolean musicPanelAutoShownForSession = false;
     /** 用户在播放期间手动折叠音乐岛后，本次播放会话不再自动弹出 */
     private boolean musicPopupSuppressedByUser = false;
+    /** 全屏抑制日志去重：音乐自动弹出按 300ms 频率重试，全屏期间只记一次日志防刷屏 */
+    private boolean lastAutoExpandSuppressedByFullscreen = false;
     /** 扩展岛空闲自动收起巡检定时器（仅用户主动展开时启动） */
     private Timer idleAutoCollapseTimer;
     /** 空闲计时起点：任一阻断条件（未勾选/歌词显示/设备监测指示）出现时重置 */
@@ -146,6 +148,18 @@ public class ExpandedIslandController {
     /** 摄像头/麦克风使用状态回调（EDT），由 IslandWindow 转发 */
     public void onDeviceUsageChanged(boolean camera, boolean mic) {
         deviceUsagePanel.updateUsage(camera, mic);
+    }
+
+    /**
+     * 预热首次设备占用路径（EDT 调用，见 IslandWindow#schedulePrivacyCallbackWarmup）：
+     * “无变化重发”会把 firstUsage 判定短路，其前置 getter 与指示器状态机的
+     * 占用上升沿分支体从未执行，此处补跑一遍并立即按真实状态收敛，
+     * 不触发任何日志/动画/弹出副作用。
+     */
+    public void warmUpFirstUsageEdges() {
+        isVisible();
+        isExpandingOrCollapsing();
+        deviceUsagePanel.warmUpFirstUsageEdges();
     }
 
     /**
@@ -252,11 +266,35 @@ public class ExpandedIslandController {
         return isExpanding || isCollapsing;
     }
 
-    /** 展开扩展岛（用户点击 / 设备占用 / 音乐自动弹出共用入口） */
+    /** 扩展岛是否可见或处于展开/收起动画中（SystemTrayManager 全屏抑制收起的判定依据） */
+    public boolean isVisibleOrAnimating() {
+        return isVisible() || isExpandingOrCollapsing();
+    }
+
+    /** 展开扩展岛（用户点击 / 设备占用 / 音乐自动弹出共用入口）；自动弹出入口在真正展开前做全屏抑制最终判断 */
     void show() {
         if (disposeWindowAfterCollapse) {
             return; // 销毁流程进行中，不允许再次展开
         }
+        // ── 全屏抑制最终判断（真正展开前最后一道闸，兜底设备/音乐自动弹出的竞态）──
+        // 竞态场景：游戏内语音聊天的设备占用事件先于全屏检测到达，自动展开链路已发起，
+        // 而周期全屏检测（5s 一次）尚未完成。此处在展开一刻同步复测前台全屏窗口，
+        // 命中则放弃本次自动展开并复位自动弹出标志/计时，避免全屏下闪现显示错误内容
+        // （残留旧主页、设备占用区未刷新）的扩展岛。
+        // 用户点击展开（deviceAutoExpanded/musicAutoExpanded 均为 false）不在此拦截，
+        // 保持"显式操作不受限"语义；其可见状态由 pollFullscreenSuppression 在 5s 内收起。
+        if ((deviceAutoExpanded || musicAutoExpanded) && Win32WindowUtil.isForegroundFullscreenWindow()) {
+            if (!lastAutoExpandSuppressedByFullscreen) {
+                lastAutoExpandSuppressedByFullscreen = true;
+                AppLogger.info("IslandWindow", "全屏抑制：前台全屏窗口，禁止扩展岛自动展开（设备占用/音乐自动弹出）");
+            }
+            deviceAutoExpanded = false;
+            musicAutoExpanded = false;
+            musicPanelAutoShownForSession = false;
+            cancelDeviceAutoHideTimer();
+            return;
+        }
+        lastAutoExpandSuppressedByFullscreen = false;
         // 复用已隐藏的窗口（避免每次展开重建 JWindow 原生窗口，点击→首帧 90~115ms → 30ms 内）
         final boolean reuseWindow = expandedWindow != null;
         if (!reuseWindow) {
@@ -544,6 +582,20 @@ public class ExpandedIslandController {
     /** 直接隐藏：扩展岛整体向上平移滑出屏幕顶部（自动隐藏场景，不做形态收缩） */
     void hideSlideUp() {
         hideExpandedIslandInternal(true);
+    }
+
+    /**
+     * 全屏抑制收起：SystemTrayManager 周期检测前台全屏窗口后调用（EDT）。
+     * 扩展岛可见或展开动画中时以直接隐藏方式收起（中途终止展开动画），
+     * 复用折叠收尾统一复位自动弹出标志、卡片切换状态与设备占用残留，
+     * 避免全屏期间保持可见或退出全屏后重新展开时闪现错误主页。
+     */
+    public void collapseByFullscreen() {
+        if (!isVisibleOrAnimating()) {
+            return;
+        }
+        AppLogger.info("IslandWindow", "全屏抑制：前台全屏窗口，收起扩展岛（含展开动画中途）");
+        hideSlideUp();
     }
 
     private void hideExpandedIslandInternal(boolean slideUp) {

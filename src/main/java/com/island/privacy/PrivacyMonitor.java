@@ -48,6 +48,15 @@ public class PrivacyMonitor extends AbstractPollingMonitor {
         }
     }
 
+    /**
+     * 以当前状态重发一次回调：状态与监听器侧一致时下游 updateUsage 全程无副作用
+     * （不记日志、不改标志、不启动动画/弹出）。供启动预热首占用回调链使用，
+     * 把类加载/JIT/EDT 冷唤醒等一次性成本移出真实设备占用时刻。
+     */
+    public void resendCurrentState() {
+        fireChanged(lastCameraInUse, lastMicInUse);
+    }
+
     private void fireChanged(boolean camera, boolean mic) {
         PrivacyListener l = listener;
         if (l != null) {
