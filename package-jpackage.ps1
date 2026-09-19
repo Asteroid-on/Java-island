@@ -29,6 +29,29 @@ $DistDir    = Join-Path $Root 'dist'
 $ImageRoot  = Join-Path $DistDir $AppName
 $IconPath   = Join-Path $Root 'app-icon.ico'
 
+# jpackage(JDK 25) 默认运行时模块集 + jdk.crypto.mscapi/jdk.crypto.cryptoki/jdk.localedata：
+# 前者是 jpackage 自带运行时的模块清单（保持体积不变）；
+# jdk.crypto.* 提供 SunMSCAPI 提供者，Windows-ROOT 信任库（IslandApplication 中设置）
+# 必需，否则打包产物启动即崩；
+# jdk.localedata 提供 CLDR 多语言区域数据，缺失时 DateTimeFormatter 即使显式
+# withLocale(SIMPLIFIED_CHINESE) 也拿不到中文格式，日期会退化为英文 "2026 Aug 31"。
+$RuntimeModules = @(
+    'java.base', 'java.compiler', 'java.datatransfer', 'java.xml', 'java.prefs',
+    'java.desktop', 'java.instrument', 'java.logging', 'java.management',
+    'java.security.sasl', 'java.naming', 'java.rmi', 'java.management.rmi',
+    'java.net.http', 'java.scripting', 'java.security.jgss', 'java.smartcardio',
+    'java.transaction.xa', 'java.sql', 'java.sql.rowset', 'java.xml.crypto',
+    'jdk.accessibility', 'jdk.internal.jvmstat', 'jdk.attach', 'jdk.internal.opt',
+    'jdk.zipfs', 'jdk.compiler', 'jdk.dynalink', 'jdk.httpserver',
+    'jdk.incubator.vector', 'jdk.internal.ed', 'jdk.internal.le', 'jdk.internal.md',
+    'jdk.jartool', 'jdk.javadoc', 'jdk.management', 'jdk.management.agent',
+    'jdk.jconsole', 'jdk.jdwp.agent', 'jdk.jdi', 'jdk.jfr', 'jdk.jshell',
+    'jdk.jsobject', 'jdk.management.jfr', 'jdk.net', 'jdk.nio.mapmode', 'jdk.sctp',
+    'jdk.security.auth', 'jdk.security.jgss', 'jdk.unsupported',
+    'jdk.unsupported.desktop', 'jdk.xml.dom',
+    'jdk.crypto.mscapi', 'jdk.crypto.cryptoki', 'jdk.localedata'
+) -join ','
+
 function Find-Mvn {
     $cmd = Get-Command mvn.cmd -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -71,6 +94,42 @@ function Find-Jpackage {
         if ($c -and (Test-Path $c)) { return $c }
     }
     throw 'jpackage.exe not found. Install JDK 25 (same as the compile target) or set JAVA_HOME.'
+}
+
+<#
+  Build a full runtime image via jlink (default module set = full JDK runtime)
+  plus jdk.crypto.mscapi / jdk.crypto.cryptoki: JDK 25 jpackage strips them from
+  the default image, but the app switches the HTTPS trust store to Windows-ROOT
+  (IslandApplication), which needs the SunMSCAPI provider; without it the default
+  SSLContext fails to initialize and the packaged app crashes on startup.
+  jdk.localedata is also included: without CLDR locale data the zh-CN date
+  formatter falls back to the root pattern and the island shows "2026 Aug 31".
+#>
+function Build-RuntimeImage {
+    param([string]$JdkHome)
+    # 缓存目录带模块集哈希后缀：模块清单变化时自动失效重建，
+    # 避免旧缓存（如缺 jdk.localedata）被误用导致日期显示英文回归
+    $moduleHash = ([System.Security.Cryptography.MD5]::Create().ComputeHash(
+        [System.Text.Encoding]::UTF8.GetBytes($RuntimeModules)) |
+        ForEach-Object { $_.ToString('x2') }) -join ''
+    $moduleHash = $moduleHash.Substring(0, 8)
+    $out = Join-Path $Root ('target\jpackage-runtime-' + $moduleHash)
+    if (Test-Path (Join-Path $out 'release')) {
+        Write-Host '  using cached target\jpackage-runtime-'$moduleHash
+        return $out
+    }
+    $jlink = Join-Path $JdkHome 'bin\jlink.exe'
+    if (-not (Test-Path $jlink)) { throw "jlink.exe not found: $jlink" }
+    if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+    $jlinkArgs = @(
+        '--add-modules', $RuntimeModules,
+        '--no-header-files', '--no-man-pages',
+        '--compress', 'zip-6',
+        '--output', $out
+    )
+    & $jlink @jlinkArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) { throw "jlink failed, exit $LASTEXITCODE" }
+    return $out
 }
 
 <#
@@ -151,6 +210,7 @@ try {
         try { Remove-Item $ImageRoot -Recurse -Force }
         catch { throw 'cannot remove old image. close the running Java-island instance first.' }
     }
+    $runtimeImage = Build-RuntimeImage -JdkHome $JdkHome
     $jpackageArgs = @(
         '--type', 'app-image',
         '--name', $AppName,
@@ -160,6 +220,7 @@ try {
         '--input', $Staging,
         '--main-jar', $MainJar,
         '--main-class', $MainClass,
+        '--runtime-image', $runtimeImage,
         '--dest', $DistDir,
         '--java-options', '-Dfile.encoding=UTF-8'
     )

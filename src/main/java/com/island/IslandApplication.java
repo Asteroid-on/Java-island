@@ -29,6 +29,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -79,9 +80,13 @@ public class IslandApplication {
         // 部分机器装有 HTTPS 加速/代理工具（如 SteamTools）对 GitHub 等域名做证书 MITM，
         // 其根证书已入 Windows 证书库（浏览器/PowerShell 访问正常）但不在 JVM 内置
         // cacerts 中，导致更新检测报 PKIX path building failed；Windows-ROOT 让 JVM 跟随
-        // 系统信任链，一并解决。SunMSCAPI 提供者缺失等异常时保持默认信任库不影响启动。
+        // 系统信任链，一并解决。先探测 Windows-ROOT 可用再设置（jpackage 精简运行时
+        // 若裁掉 jdk.crypto.mscapi 模块则不可用），探测失败保持默认信任库，
+        // 否则默认 SSLContext 初始化抛异常导致启动崩溃。
         try {
             if (System.getProperty("javax.net.ssl.trustStoreType") == null) {
+                KeyStore probe = KeyStore.getInstance("Windows-ROOT");
+                probe.load(null, null);
                 System.setProperty("javax.net.ssl.trustStoreType", "Windows-ROOT");
             }
         } catch (Exception ignored) {
