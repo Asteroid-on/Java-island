@@ -62,7 +62,13 @@ $deps = (Get-Content $cpFile -Raw).Trim()
 $cp   = "$Root\target\classes;$deps"
 
 # ── 4. launch ──
-$argsList = @('-Dfile.encoding=UTF-8')
+# JVM 内存参数与 package-jpackage.ps1 的 --java-options 保持一致：
+# 硬顶 512m + 常态软上限 224m + 空闲 5min 周期性并发 GC 归还内存，
+# 使开发版浸泡与打包版行为一致、可对照复测。
+$argsList = @('-Dfile.encoding=UTF-8',
+    '-Xmx512m', '-XX:SoftMaxHeapSize=224m',
+    '-XX:G1PeriodicGCInterval=300000', '-XX:+G1PeriodicGCInvokesConcurrent',
+    '-XX:MaxMetaspaceSize=192m')
 if ($Debug) { $argsList += '-Disland.debug=true' }
 $argsList += @('-cp', $cp, $MainClass)
 if ($Console) {

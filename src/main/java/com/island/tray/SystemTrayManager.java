@@ -41,6 +41,19 @@ public class SystemTrayManager {
     /** 菜单字体（黑体，13pt） */
     private static final Font MENU_FONT = new Font("SimHei", Font.PLAIN, 13);
 
+    /** 菜单图标懒加载缓存：旧实现每次右键都重新解析 SVG + 光栅化，
+     *  颜色/尺寸固定，按资源路径缓存一次即可（仅 EDT 访问，无需加锁） */
+    private static final java.util.Map<String, Image> MENU_ICON_CACHE = new java.util.HashMap<>();
+
+    private static Image menuItemIcon(String path) {
+        Image cached = MENU_ICON_CACHE.get(path);
+        if (cached == null) {
+            cached = SvgIcon.load(path, 40, new Color(235, 235, 235));
+            MENU_ICON_CACHE.put(path, cached);
+        }
+        return cached;
+    }
+
     public SystemTrayManager(IslandWindow islandWindow) {
         this.islandWindow = islandWindow;
         this.service = DynamicIslandServiceImpl.getInstance();
@@ -134,7 +147,7 @@ public class SystemTrayManager {
         panel.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2));
 
         // ── "设置" 项 ──
-        Image settingsIcon = SvgIcon.load("/icons/设置_setting-two.svg", 40, FG_TEXT);
+        Image settingsIcon = menuItemIcon("/icons/设置_setting-two.svg");
         MenuItem settingsItem = new MenuItem("设  置", MENU_W, ITEM_H, BG_NORMAL, BG_HOVER, FG_TEXT, MENU_FONT, settingsIcon, 20);
         settingsItem.addMouseListener(new MouseAdapter() {
             @Override
@@ -162,7 +175,7 @@ public class SystemTrayManager {
         panel.add(sep2);
 
         // ── "退出" 项 ──
-        Image exitIcon = SvgIcon.load("/icons/退出_logout.svg", 40, FG_TEXT);
+        Image exitIcon = menuItemIcon("/icons/退出_logout.svg");
         MenuItem exitItem = new MenuItem("退  出", MENU_W, ITEM_H, BG_NORMAL, BG_HOVER, FG_TEXT, MENU_FONT, exitIcon, 20);
         exitItem.addMouseListener(new MouseAdapter() {
             @Override
@@ -615,7 +628,9 @@ public class SystemTrayManager {
             if (fgFullscreen != lastFullscreenFg) {
                 lastFullscreenFg = fgFullscreen;
                 if (fgFullscreen) {
-                    AppLogger.info("SystemTray", "检测到前台无边框全屏窗口：暂停鼠标触发显示岛，"
+                    // 附前台窗口描述（hwnd=类名）：区分真实全屏游戏与误判
+                    AppLogger.info("SystemTray", "检测到前台无边框全屏窗口（前台: "
+                            + Win32WindowUtil.getForegroundWindowDesc() + "）：暂停鼠标触发显示岛，"
                             + "可见/展开中的扩展岛与主岛自动收起；"
                             + "若为独占全屏游戏，Windows 会接管显示输出导致岛无法覆盖");
                 }

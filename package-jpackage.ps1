@@ -222,7 +222,11 @@ try {
         '--main-class', $MainClass,
         '--runtime-image', $runtimeImage,
         '--dest', $DistDir,
-        '--java-options', '-Dfile.encoding=UTF-8'
+        '--java-options', '-Dfile.encoding=UTF-8',
+        # 长期运行内存治理：硬顶 512m 杜绝涨到 1GB；SoftMaxHeapSize 让常态堆压回 224m；
+        # G1PeriodicGCInterval 空闲 5min 触发并发标记并 uncommit 归还内存（解决"只扩不还"）；
+        # MaxMetaspaceSize 给元数据区设上限，防类/lambda 缓慢堆积。
+        '--java-options', '-Xmx512m -XX:SoftMaxHeapSize=224m -XX:G1PeriodicGCInterval=300000 -XX:+G1PeriodicGCInvokesConcurrent -XX:MaxMetaspaceSize=192m'
     )
     if (Test-Path $IconPath) { $jpackageArgs += @('--icon', $IconPath) }
     & $Jpackage @jpackageArgs

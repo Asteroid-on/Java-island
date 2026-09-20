@@ -226,6 +226,8 @@ public class ExpandedIslandController {
         musicPanel.stopLyricScrollTimer();
         deviceUsagePanel.stopUsageAnimTimer();
         musicPanel.flushCoverImage();
+        // 关闭封面解码执行器：避免销毁后排队任务访问已失效面板/线程残留
+        musicSessionController.shutdown();
         cancelDeviceAutoHideTimer();
         cancelMusicStopAutoHideTimer();
         stopIdleAutoCollapseTimer();

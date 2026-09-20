@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Base64;
 
 /**
@@ -34,6 +35,11 @@ public final class WindowsMediaManager {
     private static volatile String cachedThumbHash = "";
     private static volatile String cachedThumbBase64 = "";
 
+    /** 上次读取的文件指纹（mtime+size）：daemon 未重写时短路复用解析结果 */
+    private static volatile String lastFingerprint = "";
+    /** 上次解析结果：与指纹配对缓存，命中时零读盘零 JSON 解析 */
+    private static volatile MusicInfo lastMusicInfo = null;
+
     private WindowsMediaManager() {}
 
     /** 检查 daemon 是否在运行（JSON 文件是否存在） */
@@ -50,7 +56,19 @@ public final class WindowsMediaManager {
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
             try {
                 if (!Files.exists(POS_FILE)) {
+                    lastFingerprint = "";
+                    lastMusicInfo = null;
                     return MusicInfo.EMPTY;
+                }
+
+                // 未变化短路：daemon 只在 SMTC 事件/位置更新时重写文件，
+                // 暂停/无会话的空转轮次 mtime+size 不变，直接复用上次的解析结果，
+                // 消除 300ms 轮询链路里占绝大多数的重复读盘 + 全量 JSON 解析分配
+                String fingerprint = fileFingerprint();
+                MusicInfo cached = lastMusicInfo;
+                if (fingerprint != null && !fingerprint.isEmpty()
+                        && fingerprint.equals(lastFingerprint) && cached != null) {
+                    return cached;
                 }
 
                 byte[] raw = Files.readAllBytes(POS_FILE);
@@ -72,7 +90,11 @@ public final class WindowsMediaManager {
                 }
 
                 JSONObject json = new JSONObject(content);
-                return parseJson(json);
+                MusicInfo info = parseJson(json);
+                // 指纹在读盘前采集：若读期间文件被替换，下一轮指纹不一致会重新解析，无脏读风险
+                lastFingerprint = fingerprint == null ? "" : fingerprint;
+                lastMusicInfo = info;
+                return info;
             } catch (org.json.JSONException e) {
                 if (attempt < MAX_RETRIES - 1) {
                     try { Thread.sleep(RETRY_DELAY_MS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
@@ -95,9 +117,26 @@ public final class WindowsMediaManager {
         return MusicInfo.EMPTY;
     }
 
+    /** 读文件 mtime+size 组合为指纹；读取失败返回 null（视为已变化，走完整读盘路径） */
+    private static String fileFingerprint() {
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(POS_FILE, BasicFileAttributes.class);
+            return attrs.lastModifiedTime().toMillis() + ":" + attrs.size();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
     private static MusicInfo parseJson(JSONObject json) {
+        boolean hasSession = json.optBoolean("hasSession", false);
+        // 会话消失时释放封面常驻：cachedThumbBase64 是 MB 级大字符串，
+        // 无会话后再也不会被命中，立即清空避免长期驻留 Old 区
+        if (!hasSession && !cachedThumbBase64.isEmpty()) {
+            cachedThumbHash = "";
+            cachedThumbBase64 = "";
+        }
         return MusicInfo.builder()
-                .hasSession(json.optBoolean("hasSession", false))
+                .hasSession(hasSession)
                 .hasMusicProcess(json.optBoolean("hasMusicProcess", false))
                 .title(json.optString("title", ""))
                 .artist(json.optString("artist", ""))

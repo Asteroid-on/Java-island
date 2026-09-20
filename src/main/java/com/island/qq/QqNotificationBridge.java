@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 
 /**
  * Java ↔ QqNotifyDaemon 桥接层。
@@ -24,6 +25,11 @@ public final class QqNotificationBridge {
     private static final int MAX_RETRIES = 3;
     /** 读取/解析失败时的重试间隔（daemon 正在原子替换文件时的短暂窗口） */
     private static final long RETRY_DELAY_MS = 5;
+
+    /** 上次读取的文件指纹（mtime+size）与解析结果：状态文件仅在真实通知到达时重写，
+     *  未变化时短路复用，消除 200ms 兜底轮询的重复读盘 + JSON 解析分配 */
+    private static volatile String lastFingerprint = "";
+    private static volatile QqNotification lastResult = null;
 
     private QqNotificationBridge() {}
 
@@ -43,6 +49,11 @@ public final class QqNotificationBridge {
                 if (!Files.exists(POS_FILE)) {
                     return QqNotification.EMPTY;
                 }
+                String fingerprint = fileFingerprint();
+                QqNotification cached = lastResult;
+                if (fingerprint != null && fingerprint.equals(lastFingerprint) && cached != null) {
+                    return cached;
+                }
                 byte[] raw = Files.readAllBytes(POS_FILE);
                 if (raw.length == 0) {
                     if (attempt < MAX_RETRIES - 1) {
@@ -60,7 +71,7 @@ public final class QqNotificationBridge {
                     return QqNotification.EMPTY;
                 }
                 JSONObject json = new JSONObject(content);
-                return QqNotification.builder()
+                QqNotification result = QqNotification.builder()
                         .valid(true)
                         .seq(json.optLong("seq", -1))
                         .appId(json.optString("appId", ""))
@@ -69,6 +80,9 @@ public final class QqNotificationBridge {
                         .groupName(json.optString("groupName", ""))
                         .timestamp(json.optLong("timestamp", 0))
                         .build();
+                lastFingerprint = fingerprint == null ? "" : fingerprint;
+                lastResult = result;
+                return result;
             } catch (org.json.JSONException e) {
                 if (attempt < MAX_RETRIES - 1) {
                     try { Thread.sleep(RETRY_DELAY_MS); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
@@ -89,5 +103,15 @@ public final class QqNotificationBridge {
             }
         }
         return QqNotification.EMPTY;
+    }
+
+    /** 读文件 mtime+size 组合为指纹；失败返回 null（视为已变化，走完整读盘路径） */
+    private static String fileFingerprint() {
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(POS_FILE, BasicFileAttributes.class);
+            return attrs.lastModifiedTime().toMillis() + ":" + attrs.size();
+        } catch (IOException e) {
+            return null;
+        }
     }
 }

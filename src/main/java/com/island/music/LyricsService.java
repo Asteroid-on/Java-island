@@ -59,16 +59,22 @@ public final class LyricsService {
 
         List<LyricItem> cached = cache.getLyrics(sourceAppId, title, artist);
         if (cached != null) {
-            System.out.println("[Lyrics] 缓存命中 " + title + " - " + artist + " src=" + sourceAppId);
+            if (AppConstants.DEBUG_CONSOLE) {
+                System.out.println("[Lyrics] 缓存命中 " + title + " - " + artist + " src=" + sourceAppId);
+            }
             return cached;
         }
 
-        System.out.println("[Lyrics] " + title + " - " + artist + " src=" + sourceAppId);
+        if (AppConstants.DEBUG_CONSOLE) {
+            System.out.println("[Lyrics] " + title + " - " + artist + " src=" + sourceAppId);
+        }
         List<LyricItem> lines = dispatcher.dispatchLyrics(title, artist, sourceAppId);
 
         if (!lines.isEmpty()) {
             cache.putLyrics(sourceAppId, title, artist, lines);
-            System.out.println("[Lyrics] ✅ " + lines.size() + "行");
+            if (AppConstants.DEBUG_CONSOLE) {
+                System.out.println("[Lyrics] ✅ " + lines.size() + "行");
+            }
         } else {
             AppLogger.warn("Lyrics", "歌词获取失败（所有来源）: " + title + " - " + artist);
         }
@@ -84,7 +90,9 @@ public final class LyricsService {
 
         String cached = cache.getCoverUrl(sourceAppId, title, artist);
         if (cached != null) {
-            System.out.println("[Cover] 缓存命中 " + title + " - " + artist);
+            if (AppConstants.DEBUG_CONSOLE) {
+                System.out.println("[Cover] 缓存命中 " + title + " - " + artist);
+            }
             return cached;
         }
 

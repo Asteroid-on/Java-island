@@ -20,7 +20,8 @@ public class DynamicIslandServiceImpl implements DynamicIslandService {
     // 云隙泡状态
     private IslandState currentState = IslandState.HIDDEN;
 
-    // 通知列表
+    // 通知列表（封顶保留最新 N 条：旧实现只增不清，长期运行会无界堆积）
+    private static final int NOTIFICATIONS_MAX = 20;
     private final List<IslandNotification> notifications = new ArrayList<>();
 
     // 配置
@@ -78,6 +79,10 @@ public class DynamicIslandServiceImpl implements DynamicIslandService {
     public void addNotification(String title, String message) {
         IslandNotification notification = new IslandNotification(title, message);
         notifications.add(notification);
+        // 超出上限时丢弃最旧条目，仅保留最近 N 条（getLatestNotification 语义不变）
+        while (notifications.size() > NOTIFICATIONS_MAX) {
+            notifications.remove(0);
+        }
 
         // 如果当前隐藏，自动显示
         if (currentState == IslandState.HIDDEN) {

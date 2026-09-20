@@ -8,21 +8,21 @@ import com.island.config.AppConstants;
 import com.island.util.AppLogger;
 
 import javax.imageio.ImageIO;
-import javax.swing.JLabel;
 import javax.swing.SwingUtilities;
 import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.Graphics2D;
 import java.awt.Image;
-import java.awt.MediaTracker;
 import java.awt.RenderingHints;
-import java.awt.Toolkit;
 import java.awt.geom.Ellipse2D;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.net.URL;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 音乐会话状态机：曲目切换检测、歌词/封面异步获取、进度展示、
@@ -34,6 +34,14 @@ class MusicSessionController {
 
     private final ExpandedIslandController controller;
     private final transient LyricsService lyricsService = new LyricsService();
+    /** SMTC 封面解码专用单线程执行器（daemon）：避免每次新封面都新建一条线程，
+     *  也保证解码串行、不与会话切换竞态 */
+    private final ExecutorService coverDecodeExecutor =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "SmtcCoverDecoder");
+                t.setDaemon(true);
+                return t;
+            });
 
     private List<LyricItem> lrcLines = Collections.emptyList();
     private volatile MusicInfo currentMusicInfo = MusicInfo.EMPTY;
@@ -44,13 +52,22 @@ class MusicSessionController {
     private volatile boolean fetchingCover = false;
     private volatile String lastFetchedTrackId = "";
     private volatile String lastFetchedCoverTrackId = "";
-    private String lastCoverBase64 = "";
-    /** 最近一次尝试解码的 SMTC Base64：解码后无论是否应用都记录，防止每轮重复解码 */
-    private String lastTriedCoverBase64 = "";
-    /** 切歌前上一曲目的 SMTC Base64：新曲目仍上报相同缩略图时判定为 daemon 旧图，不信任 */
-    private String prevTrackCoverBase64 = "";
     /** SMTC Base64 封面成功应用对应的曲目标识（title|artist），用于 URL 源封面跳过判断 */
     private String smTcCoverAppliedTrackId = "";
+    /**
+     * 封面指纹（length+hashCode）而非整串 Base64：旧实现三份 MB 级巨串字段常驻，
+     * 长期驻留 Old 区；指纹足以区分"同一张图/不同图"，比较逻辑不变。
+     */
+    private String lastCoverFp = "";
+    /** 最近一次尝试解码的 SMTC 封面指纹：解码后无论是否应用都记录，防止每轮重复解码 */
+    private String lastTriedCoverFp = "";
+    /** 切歌前上一曲目的 SMTC 封面指纹：新曲目仍上报相同缩略图时判定为 daemon 旧图，不信任 */
+    private String prevTrackCoverFp = "";
+
+    /** 封面 Base64 指纹：长度+hashCode 组合，避免字段持有整串巨字符串 */
+    private static String coverFingerprint(String b64) {
+        return b64 == null || b64.isEmpty() ? "" : b64.length() + ":" + b64.hashCode();
+    }
     /** 上一次处于严格播放状态的来源播放器标识，用于检测活跃播放器切换 */
     private String lastActiveSourceAppId = "";
     /** 已应用到面板的内容签名（歌名|艺术家|封面指纹）：无变化时跳过重复重设文本与整窗重绘 */
@@ -183,10 +200,10 @@ class MusicSessionController {
             lyricsFetchFailed = false;
             fetchingCover = false;
             resetSodaPositionEstimator();
-            // 切歌：记录上一曲缩略图用于旧图识别，清空旧封面确保与新曲目严格对应
-            prevTrackCoverBase64 = lastCoverBase64;
-            lastCoverBase64 = "";
-            lastTriedCoverBase64 = "";
+            // 切歌：记录上一曲缩略图指纹用于旧图识别，清空旧封面确保与新曲目严格对应
+            prevTrackCoverFp = lastCoverFp;
+            lastCoverFp = "";
+            lastTriedCoverFp = "";
             smTcCoverAppliedTrackId = "";
             lastPanelContentSig = "";
             lastFetchedTrackId = "";
@@ -217,9 +234,9 @@ class MusicSessionController {
                 lyricsFetchFailed = false;
                 fetchingCover = false;
                 resetSodaPositionEstimator();
-                prevTrackCoverBase64 = lastCoverBase64;
-                lastCoverBase64 = "";
-                lastTriedCoverBase64 = "";
+                prevTrackCoverFp = lastCoverFp;
+                lastCoverFp = "";
+                lastTriedCoverFp = "";
                 smTcCoverAppliedTrackId = "";
                 lastPanelContentSig = "";
                 mp.flushCoverImage();
@@ -237,14 +254,16 @@ class MusicSessionController {
         // SMTC 缩略图优先：b64 到达/变化时立即应用，覆盖可能先到的 URL 封面
         if (controller.isMusicPanelShown() && mp.isInitialized()
                 && !info.getThumbnailBase64().isEmpty()
-                && !info.getThumbnailBase64().equals(lastCoverBase64)) {
+                && !coverFingerprint(info.getThumbnailBase64()).equals(lastCoverFp)) {
             updateMusicPanelContent();
         }
 
         // 媒体会话出现：占位面板 → 自动切换到音乐面板
         if (info.hasSession() && !wasSession && controller.isMusicPanelShown()
                 && controller.isPlaceholderShown()) {
-            System.out.println("[IslandWindow] 媒体会话出现，自动切换到音乐面板");
+            if (AppConstants.DEBUG_CONSOLE) {
+                System.out.println("[IslandWindow] 媒体会话出现，自动切换到音乐面板");
+            }
             controller.ensureMusicPanelInExpandedWindow();
         }
 
@@ -392,21 +411,22 @@ class MusicSessionController {
 
         // 封面：SMTC Base64 强制优先；daemon 时序滞后的旧图不信任，低分辨率缩略图插值提升后使用
         if (!b64.isEmpty()) {
-            if (b64.equals(prevTrackCoverBase64)) {
+            String fp = coverFingerprint(b64);
+            if (fp.equals(prevTrackCoverFp)) {
                 // 新曲目仍上报上一曲的缩略图 → 判定为 daemon 旧图，不信任，等待网络封面补位
                 if (AppConstants.DEBUG_CONSOLE) {
                     System.out.println("[IslandWindow] SMTC缩略图与上一曲相同，判定为旧图，等待网络封面");
                 }
                 smTcCoverAppliedTrackId = "";
-            } else if (b64.equals(lastTriedCoverBase64)) {
+            } else if (fp.equals(lastTriedCoverFp)) {
                 // 已提交解码/已应用：仅当该图确实已应用时标记，避免每轮重复解码
-                smTcCoverAppliedTrackId = b64.equals(lastCoverBase64) ? fullTitle + "|" + fullArtist : "";
+                smTcCoverAppliedTrackId = fp.equals(lastCoverFp) ? fullTitle + "|" + fullArtist : "";
             } else {
-                lastTriedCoverBase64 = b64;
+                lastTriedCoverFp = fp;
                 smTcCoverAppliedTrackId = "";
                 // 解码与超采样裁剪移出 EDT：旧实现用 MediaTracker.waitForID(0, 1000) 在 EDT 阻塞等图，
                 // 时机恰与新封面到达 + 音乐岛弹出重合，直接吃掉展开/滑动动画的若干帧
-                startSmtcCoverDecode(b64, fullTitle + "|" + fullArtist);
+                startSmtcCoverDecode(b64, fp, fullTitle + "|" + fullArtist);
             }
         } else {
             smTcCoverAppliedTrackId = "";
@@ -425,23 +445,23 @@ class MusicSessionController {
      * SMTC Base64 封面后台解码 + 超采样圆形裁剪，完成后回 EDT 应用。
      *
      * <p>与旧版行为完全一致（同样优先 SMTC、低分辨率插值提升、失败时等 URL 补位），
-     * 仅把 base64 解码、{@code MediaTracker} 等图与双三次插值从 EDT 搬走；
-     * 应用前按 b64 严格校验“仍是当前会话上报的图且未被判为旧图”，避免解码回米的旧图覆盖新图。</p>
+     * 仅把 base64 解码、MediaTracker 等图与双三次插值从 EDT 搬走；
+     * 应用前按指纹严格校验“仍是当前会话上报的图且未被判为旧图”，避免解码回来的旧图覆盖新图。</p>
+     *
+     * <p>旧实现每次 `new Thread` + `Toolkit.createImage` + `MediaTracker(new JLabel())`：
+     * 隐形 Component 与 Toolkit 托管图片徒增堆外/注册表开销；改用 ImageIO 直接解码
+     * 到 BufferedImage，任务投到专用单线程 daemon 执行器串行执行。</p>
      */
-    private void startSmtcCoverDecode(String b64, String trackId) {
-        new Thread(() -> {
+    private void startSmtcCoverDecode(String b64, String fp, String trackId) {
+        coverDecodeExecutor.execute(() -> {
             Image circular = null;
             try {
                 byte[] data = Base64.getDecoder().decode(b64);
-                Image raw = Toolkit.getDefaultToolkit().createImage(data);
-                MediaTracker mt = new MediaTracker(new JLabel());
-                mt.addImage(raw, 0);
-                mt.waitForID(0, 1000);
-                int w = raw.getWidth(null);
-                if (w > 0) {
+                BufferedImage raw = ImageIO.read(new ByteArrayInputStream(data));
+                if (raw != null && raw.getWidth() > 0) {
                     // 强制使用 SMTC 缩略图：低分辨率由 createCircularCover 双三次插值提升至 COVER_HIRES(144px)
-                    if (w < 200) {
-                        System.out.println("[IslandWindow] SMTC缩略图分辨率较低(" + w + "px)，已插值提升显示");
+                    if (raw.getWidth() < 200 && AppConstants.DEBUG_CONSOLE) {
+                        System.out.println("[IslandWindow] SMTC缩略图分辨率较低(" + raw.getWidth() + "px)，已插值提升显示");
                     }
                     circular = createCircularCover(raw, IslandUiStyle.COVER_HIRES);
                 }
@@ -451,15 +471,21 @@ class MusicSessionController {
             if (circular == null) return;
             final Image toApply = circular;
             SwingUtilities.invokeLater(() -> {
-                if (currentMusicInfo == null || !b64.equals(currentMusicInfo.getThumbnailBase64())) return;
-                if (b64.equals(prevTrackCoverBase64) || b64.equals(lastCoverBase64)) return;
+                MusicInfo info = currentMusicInfo;
+                if (info == null || !fp.equals(coverFingerprint(info.getThumbnailBase64()))) return;
+                if (fp.equals(prevTrackCoverFp) || fp.equals(lastCoverFp)) return;
                 MusicPanel mp = controller.getMusicPanel();
                 mp.setCoverImage(toApply);
-                lastCoverBase64 = b64;
+                lastCoverFp = fp;
                 smTcCoverAppliedTrackId = trackId;
                 mp.repaintCover();
             });
-        }, "SmtcCoverDecoder").start();
+        });
+    }
+
+    /** 关闭解码执行器（窗口销毁链路调用，避免销毁后仍有排队任务访问已失效面板） */
+    void shutdown() {
+        coverDecodeExecutor.shutdownNow();
     }
 
     /** 根据 daemon 汇报的 positionTicks 推进歌词游标（EDT） */
@@ -545,8 +571,10 @@ class MusicSessionController {
             long estimated = sodaSyncPosMs + (now - sodaSyncWallMs);
             // daemon 值跳变（拖动进度条）→ 立即重新同步，游标跳到新位置并继续外推。
             if (daemonJumped) {
-                System.out.println("[LyricProgress] 汽水位置重新同步: daemon=" + daemonPosMs
-                        + "ms estimated=" + estimated + "ms");
+                if (AppConstants.DEBUG_CONSOLE) {
+                    System.out.println("[LyricProgress] 汽水位置重新同步: daemon=" + daemonPosMs
+                            + "ms estimated=" + estimated + "ms");
+                }
                 sodaSyncPosMs = daemonPosMs;
                 sodaSyncWallMs = now;
                 return daemonPosMs;
@@ -577,22 +605,30 @@ class MusicSessionController {
         fetchingLyrics = true;
         final String trackId = title + "|" + artist;
         final String srcAppId = currentMusicInfo.getSourceAppId();
-        System.out.println("[IslandWindow] 开始异步获取歌词: " + title + " - " + artist + " src=" + srcAppId);
+        if (AppConstants.DEBUG_CONSOLE) {
+            System.out.println("[IslandWindow] 开始异步获取歌词: " + title + " - " + artist + " src=" + srcAppId);
+        }
         new Thread(() -> {
             try {
                 List<LyricItem> lines = lyricsService.getLyrics(title, artist, srcAppId);
-                System.out.println("[IslandWindow] 歌词获取结果: " + lines.size() + " 行");
+                if (AppConstants.DEBUG_CONSOLE) {
+                    System.out.println("[IslandWindow] 歌词获取结果: " + lines.size() + " 行");
+                }
                 if (!lines.isEmpty()) {
                     SwingUtilities.invokeLater(() -> {
                         // stale-track 校验：歌词只属于发起请求时的曲目
                         String currentTrackId = currentMusicInfo.getTitle() + "|" + currentMusicInfo.getArtist();
                         if (!trackId.equals(currentTrackId)) {
-                            System.out.println("[IslandWindow] 歌词已过期（曲目已切换），丢弃");
+                            if (AppConstants.DEBUG_CONSOLE) {
+                                System.out.println("[IslandWindow] 歌词已过期（曲目已切换），丢弃");
+                            }
                             return;
                         }
                         lrcLines = lines;
                         currentLyricIndex = -1;
-                        System.out.println("[LyricProgress] 歌词异步加载完成: " + lines.size() + " 行");
+                        if (AppConstants.DEBUG_CONSOLE) {
+                            System.out.println("[LyricProgress] 歌词异步加载完成: " + lines.size() + " 行");
+                        }
                         MusicPanel mp = controller.getMusicPanel();
                         if (mp.isInitialized()) {
                             // 暂停期间加载完成：仍按暂停时的播放位置立即定位并显示对应歌词行
@@ -626,20 +662,26 @@ class MusicSessionController {
     private void fetchCoverAsync(String title, String artist) {
         if (title.isEmpty() || artist.isEmpty()) return;
         if (fetchingCover) {
-            System.out.println("[IslandWindow] 封面获取已在进行中，跳过重复请求");
+            if (AppConstants.DEBUG_CONSOLE) {
+                System.out.println("[IslandWindow] 封面获取已在进行中，跳过重复请求");
+            }
             return;
         }
         fetchingCover = true;
         final String trackId = title + "|" + artist;
         lastFetchedCoverTrackId = trackId;
         final String srcAppId = currentMusicInfo.getSourceAppId();
-        System.out.println("[IslandWindow] 开始异步获取封面: " + title + " - " + artist
-                + " src=" + srcAppId);
+        if (AppConstants.DEBUG_CONSOLE) {
+            System.out.println("[IslandWindow] 开始异步获取封面: " + title + " - " + artist
+                    + " src=" + srcAppId);
+        }
         new Thread(() -> {
             try {
                 String url = lyricsService.fetchCoverUrl(title, artist, srcAppId);
                 if (!url.isEmpty()) {
-                    System.out.println("[IslandWindow] 封面URL: " + url);
+                    if (AppConstants.DEBUG_CONSOLE) {
+                        System.out.println("[IslandWindow] 封面URL: " + url);
+                    }
                     Image cover = downloadImageFromUrl(url);
                     if (cover != null) {
                         // 超采样圆形裁剪在后台线程完成（与旧版同参数同结果），EDT 只做赋值与重绘
@@ -648,7 +690,9 @@ class MusicSessionController {
                             // stale-track 校验：封面只属于发起请求时的曲目
                             String currentTrackId = currentMusicInfo.getTitle() + "|" + currentMusicInfo.getArtist();
                             if (!trackId.equals(currentTrackId)) {
-                                System.out.println("[IslandWindow] 封面已过期（曲目已切换），丢弃");
+                                if (AppConstants.DEBUG_CONSOLE) {
+                                    System.out.println("[IslandWindow] 封面已过期（曲目已切换），丢弃");
+                                }
                                 return;
                             }
                             // SMTC 缩略图优先：当前曲目已有 SMTC 缩略图时立即尝试应用，
@@ -656,7 +700,9 @@ class MusicSessionController {
                             if (!currentMusicInfo.getThumbnailBase64().isEmpty()) {
                                 updateMusicPanelContent();
                                 if (currentTrackId.equals(smTcCoverAppliedTrackId)) {
-                                    System.out.println("[IslandWindow] SMTC封面已应用，跳过URL封面");
+                                    if (AppConstants.DEBUG_CONSOLE) {
+                                        System.out.println("[IslandWindow] SMTC封面已应用，跳过URL封面");
+                                    }
                                     return;
                                 }
                             }
@@ -666,7 +712,9 @@ class MusicSessionController {
                         });
                     }
                 } else {
-                    System.out.println("[IslandWindow] 封面获取失败（无结果）");
+                    if (AppConstants.DEBUG_CONSOLE) {
+                        System.out.println("[IslandWindow] 封面获取失败（无结果）");
+                    }
                 }
             } finally {
                 // 仅当此请求仍为"当前活跃请求"时才释放锁，防止旧曲目线程误清标志
