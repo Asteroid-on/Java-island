@@ -21,9 +21,9 @@ $ErrorActionPreference = 'Stop'
 
 $Root       = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppName    = 'Java-island'
-$AppVersion = '1.2.2'   # Windows exe file version (x.y.z form); project release is 1.2.2
+$AppVersion = '1.2.3'   # Windows exe file version (x.y.z form); project release is 1.2.3
 $MainClass  = 'com.island.IslandApplication'
-$MainJar    = 'Java-island-1.2.2.jar'
+$MainJar    = 'Java-island-1.2.3.jar'
 $Staging    = Join-Path $Root 'target\jpackage-input'
 $DistDir    = Join-Path $Root 'dist'
 $ImageRoot  = Join-Path $DistDir $AppName

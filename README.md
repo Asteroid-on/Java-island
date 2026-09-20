@@ -30,7 +30,7 @@
 mvn clean package
 ```
 
-编译成功后，会在 `target` 目录下生成 `Java-island-1.2.2.jar` 文件。
+编译成功后，会在 `target` 目录下生成 `Java-island-1.2.3.jar` 文件。
 
 ### 第二步：启动云隙泡
 
