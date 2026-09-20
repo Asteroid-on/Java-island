@@ -65,8 +65,8 @@ Java-island/
 │   ├── update/                 # 自动更新（GitHub Releases 检测/下载/解压）
 │   └── util/                   # 日志、窗口管理等工具
 ├── src/main/resources/         # 字体/图标/native(MediaInfoDaemon 源码)/config.properties
-├── QQMusicapi/                 # QQ音乐 API 子项目（Node.js + Koa，端口 3301）
-├── qishui-api/                 # 汽水音乐 API 子项目（Node.js，端口 3300，搜索/歌词/封面）
+├── QQMusicapi/                 # QQ音乐 API 外部子项目（Node.js + Koa，端口 3301，不随本仓库分发）
+├── qishui-api/                 # 汽水音乐 API 外部子项目（Node.js，端口 3300，搜索/歌词/封面，不随本仓库分发）
 ├── MediaInfoDaemon.exe         # SMTC 媒体信息守护进程（.NET 8）
 ├── WechatNotifyDaemon.exe      # 微信通知守护进程（.NET，通知中心 Toast 监听）
 ├── QqNotifyDaemon.exe          # QQ 通知守护进程（.NET，通知中心 Toast 监听）
@@ -158,7 +158,7 @@ A:
 
 ### Q: 如何开机自启动？
 A:
-打开托盘菜单 → 设置 → 勾选「开机自启」（写入注册表 `HKCU\...\Run`），或手动将 `Java-island.exe` 快捷方式放入启动文件夹：
+首次运行默认已开启开机自启（写入注册表 `HKCU\...\Run`）；如需关闭或重新开启，可在托盘菜单 → 设置中切换「开机自启」开关。也可手动将 `Java-island.exe` 快捷方式放入启动文件夹：
 ```
 Win + R → shell:startup → 粘贴快捷方式
 ```
@@ -182,6 +182,15 @@ A:
 3. 调整动画帧率（修改Timer间隔）
 
 ## 📝 更新日志
+
+### v1.2.3
+- ✅ 音乐岛自动弹出严格化：仅“正在播放且播放器窗口不可见（最小化）”才弹出，MediaInfoDaemon 按当前会话对应播放器真实枚举顶层窗口判定（旧实现对多进程播放器几乎恒判最小化），另加不可见持续 800ms 防误弹确认；无会话即清空媒体缓存
+- ✅ 展开/切卡动画流畅度：切卡帧间隔 DPI 自适应（高 DPI 不再被 Timer 合并丢帧）、每帧只改几何不做整窗 revalidate、封面 3x 超采样画布跨帧复用、SMTC/URL 封面解码与圆形裁剪移出 EDT（消除 MediaTracker 最长 1s 的 EDT 阻塞）；实测 125% 缩放下切卡卡顿帧 1 → 0
+- ✅ 游戏全屏抑制链路完善：修复托盘轮询节流导致检测被跳过的 bug、设备/音乐自动弹出增加展开一刻的最终复测兜底、设备首占用入口层遵守抑制；启动后预热首占用回调链（实测首次跳变 EDT 23ms → 1ms）
+- ✅ 长期运行内存膨胀治理：统一注入 `-Xmx512m -XX:SoftMaxHeapSize=224m` 与 G1 周期性 GC；媒体/通知轮询指纹不变空闲期零读盘零 JSON 解析、屏幕边界 5s TTL 快照缓存、封面 Base64 大串不再常驻；6 小时浸泡验证 YGC 频率降约 85%，堆存活块 18MB 零增长
+- ✅ 开机自启默认策略：首次运行（设置未落盘）默认注册开机自启并勾选开关；已开启但启动项缺失/失效时静默修复；用户显式关闭过则不再自动注册
+- ✅ 打包健壮性：jlink 运行时模块清单固化（补全 `jdk.crypto.mscapi`/`jdk.localedata`，前者缺失导致启动即崩、后者缺失导致中文日期退化英文）；Windows-ROOT 信任库实际探测通过后才启用，避免精简运行时下 SSLContext 初始化抛异常；QqNotifyDaemon 随包分发并清洗 qishui-api 凭据文件
+- ✅ 仓库瘦身：qishui-api / QQMusicapi 作为外部子项目不再随本仓库 Git 分发（本地目录保留供运行调试，发布包内自带）
 
 ### v1.2.2
 - ✅ 微信/QQ 消息上岛：WechatNotifyDaemon / QqNotifyDaemon（.NET）经 WinRT UserNotificationListener 读取通知中心内的微信/QQ Toast，解析发送者/内容（QQ 含群名）后原子写入 JSON 桥接到岛；Java 侧 WatchService 事件驱动 + 轮询兜底双通道（秒级到达），弹窗秒级抑制与 5 秒连续消息去重防刷屏，微信文案宋体高性能绘制
